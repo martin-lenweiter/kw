@@ -27,6 +27,16 @@ For each task with status `done` (`kw status <run>`):
 
 You judge only against the frozen `done_when`. Do not add requirements.
 
+- Check every row or item against every clause that can be checked
+  mechanically, by script, not by reading a sample. Spot-check facts on a
+  sample.
+- Any violation of a `done_when` clause is `blocking`, however small. Do not
+  downgrade it to a note.
+- On a repair round, read the previous findings first and reuse the same `key`
+  for a problem that is still present. Write the new findings to a new file.
+- Work that is described but was not actually done (for example, "search
+  unavailable") does not satisfy a clause.
+
 When every task has a verdict: `kw finish <run>`. It sends failed tasks back
 for repair, or ends the run as `done` or `partial`. Tasks stop as
 `needs-human` when the same blocking finding repeats, the per-task repair cap
