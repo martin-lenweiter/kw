@@ -167,6 +167,59 @@ class KwTest(unittest.TestCase):
         code, _ = run_kw("tasks", "set", self.run_dir, self.write("t.json", [{"id": "z", "goal": "g", "done_when": "d"}]), check=False)
         self.assertEqual(code, 2)
 
+    def staged(self, max_rounds=3, max_repairs=2):
+        run_kw("init", self.run_dir, "--max-rounds", max_rounds, "--max-repairs", max_repairs)
+        run_kw("phase", self.run_dir, "planning")
+        tasks = [{"id": "r1", "goal": "g", "done_when": "x"},
+                 {"id": "r2", "goal": "g", "done_when": "x"},
+                 {"id": "p1", "goal": "g", "done_when": "x", "depends_on": ["r1", "r2"]},
+                 {"id": "c1", "goal": "g", "done_when": "x", "depends_on": ["p1"]}]
+        run_kw("tasks", "set", self.run_dir, self.write("tasks.json", tasks))
+        run_kw("phase", self.run_dir, "awaiting-approval")
+        run_kw("approve", self.run_dir)
+
+    def pass_all_done(self):
+        _, s = run_kw("status", self.run_dir)
+        for t in s["tasks"]:
+            if t["status"] == "done":
+                run_kw("verdict", self.run_dir, t["id"], "pass")
+        return run_kw("finish", self.run_dir)[1]
+
+    def test_dependencies_gate_claims_and_stages_do_not_use_rounds(self):
+        self.staged(max_rounds=1)
+        self.execute_all()  # only r1, r2 are claimable
+        _, s = run_kw("status", self.run_dir)
+        self.assertEqual([t["status"] for t in s["tasks"]], ["done", "done", "todo", "todo"])
+        r = self.pass_all_done()
+        self.assertEqual(r["ready"], ["p1"])
+        self.execute_all()
+        r = self.pass_all_done()
+        self.assertEqual(r["ready"], ["c1"])
+        self.execute_all()
+        r = self.pass_all_done()
+        self.assertEqual(r["phase"], "done")
+        _, s = run_kw("status", self.run_dir)
+        self.assertEqual(s["round"], 1)
+
+    def test_needs_human_dependency_unblocks_dependents(self):
+        self.staged(max_repairs=0)
+        self.execute_all()
+        run_kw("verdict", self.run_dir, "r1", "pass")
+        _, r = run_kw("verdict", self.run_dir, "r2", "fail", "--findings", self.findings("a"))
+        self.assertEqual(r["status"], "needs-human")
+        _, r = run_kw("finish", self.run_dir)
+        self.assertEqual(r["ready"], ["p1"])
+        _, c = run_kw("claim", self.run_dir, "--owner", "w")
+        self.assertEqual(c["dependencies"]["r2"]["status"], "needs-human")
+
+    def test_dependency_cycle_rejected(self):
+        run_kw("init", self.run_dir)
+        run_kw("phase", self.run_dir, "planning")
+        tasks = [{"id": "a", "goal": "g", "done_when": "x", "depends_on": ["b"]},
+                 {"id": "b", "goal": "g", "done_when": "x", "depends_on": ["a"]}]
+        code, _ = run_kw("tasks", "set", self.run_dir, self.write("t.json", tasks), check=False)
+        self.assertEqual(code, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

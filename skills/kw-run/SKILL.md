@@ -11,7 +11,8 @@ running by a crash) and `kw status <run>`.
 ## Loop
 
 1. `kw claim <run> --owner <agent-id>` returns a task with `goal`, `done_when`,
-   `attempts` and `last_findings`, or `claimed: null` when none are left.
+   `attempts`, `last_findings` and `dependencies` (status and output of each
+   task it depends on), or `claimed: null` when nothing is runnable.
 2. Give the task to a subagent with only: the task JSON, `brief.md`, `plan.md`,
    the answers in `questions.md`, and the relevant inputs. On a repair
    (`attempts > 0`) include `last_findings` and say: fix every blocking finding;
@@ -27,7 +28,8 @@ one place (this orchestrator or one designated worker) unless the plan says
 otherwise.
 
 When `claim` returns null and `kw status` shows no running tasks:
-`kw phase <run> verifying` and hand over to kw-verify.
+`kw phase <run> verifying` and hand over to kw-verify. Tasks waiting on
+dependencies become runnable after the verify round that settles them.
 
 ## Rules
 

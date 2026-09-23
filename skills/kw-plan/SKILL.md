@@ -32,8 +32,12 @@ Write `<run>/plan.md` (approach, inputs, method, costs, risks) and
 `<run>/tasks.json`:
 
 ```json
-[{"id": "t01", "goal": "…", "done_when": "checkable condition", "inputs": "…"}]
+[{"id": "t01", "goal": "…", "done_when": "checkable condition", "inputs": "…"},
+ {"id": "t02", "goal": "…", "done_when": "…", "depends_on": ["t01"]}]
 ```
+
+`depends_on` is optional. A task runs once all its dependencies are verified
+or needs-human; it then receives their outputs and statuses.
 
 Rules:
 - Each task is independent enough to run in its own subagent.

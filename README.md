@@ -33,6 +33,12 @@ own.
 Only `kw approve` starts execution. The plan and `done_when` are frozen after
 approval.
 
+## Dependencies
+
+A task may list `depends_on`. It becomes claimable once every dependency is
+`verified` or `needs-human`, and its claim includes their outputs. A stage
+that only waits for dependencies does not use a repair round.
+
 ## Repair loop limits
 
 A failed task returns to `todo` for repair until one of these happens. Then it

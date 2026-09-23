@@ -34,6 +34,7 @@ PHASES = {
     "partial": set(),
 }
 TASK_STATUSES = {"todo", "running", "done", "verified", "needs-human"}
+TERMINAL = {"verified", "needs-human"}
 
 
 class KwError(Exception):
@@ -78,6 +79,7 @@ def apply(state, ev):
                 "id": spec["id"],
                 "goal": spec["goal"],
                 "done_when": spec["done_when"],
+                "depends_on": spec.get("depends_on", []),
                 "status": "todo",
                 "attempts": 0,
                 "owner": None,
@@ -207,6 +209,15 @@ def counts(state):
     return c
 
 
+def ready(state, task):
+    """A task can run once every dependency is terminal (verified or needs-human)."""
+    return all(state["tasks"][d]["status"] in TERMINAL for d in task.get("depends_on", []))
+
+
+def blocked_todo(state):
+    return [t["id"] for t in state["tasks"].values() if t["status"] == "todo" and not ready(state, t)]
+
+
 def next_action(state):
     """One-line instruction for whichever agent reads the run next."""
     p = state["phase"]
@@ -220,9 +231,11 @@ def next_action(state):
     if p == "awaiting-approval":
         return "human: review plan.md and critique.md, then kw approve (or move back to planning)"
     if p == "executing":
-        if c["todo"] or c["running"]:
+        blocked = len(blocked_todo(state))
+        if c["todo"] - blocked or c["running"]:
             return f"orchestrator: {c['todo']} todo, {c['running']} running; claim and execute tasks"
-        return "orchestrator: all tasks executed; move to verifying"
+        return "orchestrator: all runnable tasks executed; move to verifying" + (
+            f" ({blocked} task(s) wait for dependencies)" if blocked else "")
     if p == "verifying":
         if c["done"]:
             return f"verifier: {c['done']} task(s) awaiting verification"
@@ -281,8 +294,11 @@ def cmd_phase(args):
             raise KwError(f"cannot move {cur} -> {to}")
         if to == "executing" and cur == "awaiting-approval":
             raise KwError("use kw approve to start execution")
-        if to == "verifying" and any(t["status"] in ("todo", "running") for t in state["tasks"].values()):
-            raise KwError("tasks still todo or running")
+        if to == "verifying":
+            waiting = set(blocked_todo(state))
+            if any(t["status"] == "running" or (t["status"] == "todo" and t["id"] not in waiting)
+                   for t in state["tasks"].values()):
+                raise KwError("tasks still todo or running")
         if to == "awaiting-approval" and not state["tasks"]:
             raise KwError("no tasks set")
         if cur == "verifying":
@@ -303,6 +319,26 @@ def cmd_tasks_set(args):
         if s["id"] in seen:
             raise KwError(f"duplicate task id {s['id']}")
         seen.add(s["id"])
+    for s in specs:
+        for d in s.get("depends_on", []):
+            if d not in seen or d == s["id"]:
+                raise KwError(f"task {s['id']} has invalid dependency {d}")
+    deps = {s["id"]: s.get("depends_on", []) for s in specs}
+    visiting, done = set(), set()
+
+    def visit(tid):
+        if tid in done:
+            return
+        if tid in visiting:
+            raise KwError(f"dependency cycle at {tid}")
+        visiting.add(tid)
+        for d in deps[tid]:
+            visit(d)
+        visiting.discard(tid)
+        done.add(tid)
+
+    for tid in deps:
+        visit(tid)
     run = Run(args.run)
     with run.locked():
         state = run.load()
@@ -331,13 +367,16 @@ def cmd_claim(args):
         candidates = [args.id] if args.id else state["order"]
         for tid in candidates:
             task = get_task(state, tid)
-            if task["status"] == "todo":
+            if task["status"] == "todo" and ready(state, task):
                 lease = args.lease or state["config"]["lease_seconds"]
                 run.append(state, {"type": "claim", "id": tid, "owner": args.owner,
                                    "lease_until": now() + lease})
                 return {"claimed": tid, "goal": task["goal"], "done_when": task["done_when"],
-                        "attempts": task["attempts"], "last_findings": task["last_findings"]}
-        return {"claimed": None}
+                        "attempts": task["attempts"], "last_findings": task["last_findings"],
+                        "dependencies": {d: {"status": state["tasks"][d]["status"],
+                                             "output": state["tasks"][d]["output"]}
+                                         for d in task["depends_on"]}}
+        return {"claimed": None, "waiting_on_dependencies": blocked_todo(state)}
 
 
 def cmd_done(args):
@@ -405,13 +444,18 @@ def cmd_finish(args):
         if c["done"]:
             raise KwError(f"{c['done']} task(s) still await a verdict")
         if c["todo"]:
-            if state["round"] >= state["config"]["max_rounds"]:
-                ids = [t["id"] for t in state["tasks"].values() if t["status"] == "todo"]
-                run.append(state, {"type": "escalate", "ids": ids,
+            repairs = [t["id"] for t in state["tasks"].values() if t["status"] == "todo" and t["attempts"]]
+            if repairs and state["round"] >= state["config"]["max_rounds"]:
+                run.append(state, {"type": "escalate", "ids": repairs,
                                    "reason": f"run round cap reached ({state['config']['max_rounds']})"})
-            else:
-                run.append(state, {"type": "phase", "from": "verifying", "to": "executing", "round_up": True})
-                return {"phase": "executing", "round": state["round"], "repairs": c["todo"]}
+            if counts(state)["todo"]:
+                # Only repair rounds count against max_rounds; dependency stages do not.
+                run.append(state, {"type": "phase", "from": "verifying", "to": "executing",
+                                   "round_up": bool(repairs)})
+                return {"phase": "executing", "round": state["round"],
+                        "repairs": [r for r in repairs if state["tasks"][r]["status"] == "todo"],
+                        "ready": [t["id"] for t in state["tasks"].values()
+                                  if t["status"] == "todo" and ready(state, t)]}
         final = "done" if counts(state)["needs-human"] == 0 else "partial"
         run.append(state, {"type": "phase", "from": "verifying", "to": final})
     return {"phase": final, "counts": counts(state)}
