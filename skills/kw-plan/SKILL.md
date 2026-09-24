@@ -84,6 +84,10 @@ allocation: task groups, agent roles, runtime, concrete model and reasoning
 level where configurable, and maximum concurrent workers. Resolve task model
 tiers against the available runtime; mark any unresolved choice explicitly.
 Do not present tiers such as "standard" or "strong" as model identities.
+In the user-facing approval summary, explicitly state whether execution uses
+subagents, separate agent processes, or the current agent alone. Identify
+which tasks are delegated and which remain with the orchestrator.
+Saying "in parallel" does not satisfy this requirement.
 
 `kw phase <run> awaiting-approval`, then show the user a short summary: task
 count, approach, costs, critique outcome. Only the user approves:
