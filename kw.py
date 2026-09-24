@@ -60,9 +60,38 @@ def empty_state():
         "round": 1,
         "config": dict(DEFAULTS),
         "plan_approved": False,
+        "amendments": [],
         "tasks": {},
         "order": [],
         "events": 0,
+    }
+
+
+TASK_SPEC_KEYS = ("id", "goal", "done_when", "depends_on", "acceptance", "uses", "model",
+                  "effort", "inputs", "checkpoint", "allow_partial_inputs")
+
+
+def new_task(state, spec):
+    per_task = state["config"].get("verification") != "global"
+    return {
+        "id": spec["id"],
+        "goal": spec["goal"],
+        "done_when": spec["done_when"],
+        "depends_on": spec.get("depends_on", []),
+        "acceptance": bool(spec.get("acceptance")),
+        "uses": spec.get("uses", []),
+        "model": spec.get("model", "standard" if per_task else None),
+        "effort": spec.get("effort"),
+        "inputs": spec.get("inputs", []),
+        "checkpoint": bool(spec.get("checkpoint")),
+        "allow_partial_inputs": bool(spec.get("allow_partial_inputs", per_task)),
+        "status": "todo",
+        "attempts": 0,
+        "owner": None,
+        "lease_until": None,
+        "output": None,
+        "last_findings": [],
+        "history": [],
     }
 
 
@@ -83,27 +112,26 @@ def apply(state, ev):
         tasks.clear()
         state["order"] = []
         for spec in ev["tasks"]:
-            tasks[spec["id"]] = {
-                "id": spec["id"],
-                "goal": spec["goal"],
-                "done_when": spec["done_when"],
-                "depends_on": spec.get("depends_on", []),
-                "acceptance": bool(spec.get("acceptance")),
-                "uses": spec.get("uses", []),
-                "model": spec.get("model", "standard" if state["config"].get("verification") != "global" else None),
-                "effort": spec.get("effort"),
-                "inputs": spec.get("inputs", []),
-                "checkpoint": bool(spec.get("checkpoint")),
-                "allow_partial_inputs": bool(spec.get("allow_partial_inputs", state["config"].get("verification") != "global")),
-                "status": "todo",
-                "attempts": 0,
-                "owner": None,
-                "lease_until": None,
-                "output": None,
-                "last_findings": [],
-                "history": [],
-            }
+            tasks[spec["id"]] = new_task(state, spec)
             state["order"].append(spec["id"])
+    elif t == "amend":
+        # Listed tasks get their new spec and start over; their dependents and
+        # the acceptance task are reopened. Unaffected verified work stays.
+        for spec in ev["tasks"]:
+            fresh = new_task(state, spec)
+            if spec["id"] in tasks:
+                fresh["history"] = tasks[spec["id"]]["history"]
+            else:
+                state["order"].append(spec["id"])
+            tasks[spec["id"]] = fresh
+        for spec in ev["tasks"]:
+            invalidate_descendants(state, spec["id"], recover=True)
+        for task in tasks.values():
+            if task["acceptance"]:
+                task.update(status="todo", output=None, stop_reason=None)
+        state["amendments"].append({"by": ev.get("by"), "note": ev["note"], "tasks": [x["id"] for x in ev["tasks"]]})
+        if state["phase"] in ("verifying", "done", "partial"):
+            state["phase"] = "executing"
     elif t == "approve":
         state["plan_approved"] = True
         state["phase"] = "executing"
@@ -388,6 +416,7 @@ def cmd_status(args):
         "phase": state["phase"],
         "round": state["round"],
         "plan_approved": state["plan_approved"],
+        "amendments": state["amendments"],
         "counts": counts(state),
         "next": next_action(state),
         "tasks": [
@@ -419,10 +448,12 @@ def cmd_phase(args):
     return {"phase": to}
 
 
-def cmd_tasks_set(args):
-    specs = json.loads(Path(args.file).read_text())
-    if isinstance(specs, dict):
-        specs = specs.get("tasks", [])
+def read_specs(path):
+    specs = json.loads(Path(path).read_text())
+    return specs.get("tasks", []) if isinstance(specs, dict) else specs
+
+
+def validate_specs(specs):
     seen = set()
     for s in specs:
         for key in ("id", "goal", "done_when"):
@@ -473,6 +504,11 @@ def cmd_tasks_set(args):
     missing = set(deps) - {accept[0]} - upstream(accept[0], set())
     if missing:
         raise KwError(f"acceptance task {accept[0]} must depend on: {', '.join(sorted(missing))}")
+
+
+def cmd_tasks_set(args):
+    specs = read_specs(args.file)
+    validate_specs(specs)
     run = Run(args.run)
     with run.locked():
         state = run.load()
@@ -481,6 +517,46 @@ def cmd_tasks_set(args):
             raise KwError("plan is approved and frozen")
         run.append(state, {"type": "tasks-set", "tasks": specs})
     return {"tasks": len(specs)}
+
+
+def cmd_amend(args):
+    """Record an approved requirement change: add tasks or revise existing ones."""
+    changes = read_specs(args.file)
+    if not changes:
+        raise KwError("amendment has no tasks")
+    ids = [c.get("id") for c in changes]
+    if len(ids) != len(set(ids)):
+        raise KwError("amendment lists a task id more than once")
+    run = Run(args.run)
+    with run.locked():
+        state = run.load()
+        require_phase(state, "executing", "verifying", "done", "partial")
+        tasks = state["tasks"]
+        merged = []
+        for c in changes:
+            base = tasks.get(c.get("id"))
+            spec = {k: base[k] for k in TASK_SPEC_KEYS} if base else {}
+            merged.append({**spec, **c})
+        by_id = {tid: {k: tasks[tid][k] for k in TASK_SPEC_KEYS} for tid in state["order"]}
+        new_ids = [i for i in ids if i not in by_id]
+        by_id.update({m.get("id"): m for m in merged})
+        validate_specs(list(by_id.values()))
+        # Refuse to reset work that a worker still holds.
+        affected = {m["id"] for m in merged} | {tid for tid, sp in by_id.items() if sp.get("acceptance")}
+        changed = True
+        while changed:
+            changed = False
+            for tid, sp in by_id.items():
+                if tid not in affected and affected.intersection(sp.get("depends_on", [])):
+                    affected.add(tid)
+                    changed = True
+        busy = sorted(tid for tid in affected if tid in tasks and tasks[tid]["status"] == "running")
+        if busy:
+            raise KwError(f"stop the workers on {', '.join(busy)} before amending them")
+        run.append(state, {"type": "amend", "tasks": merged, "by": args.by, "note": args.note})
+        reopened = [tid for tid in state["order"] if tid in affected]
+    return {"phase": state["phase"], "amendment": len(state["amendments"]),
+            "added": new_ids, "reopened": reopened}
 
 
 def cmd_approve(args):
@@ -935,6 +1011,13 @@ def build_parser():
     s.add_argument("run")
     s.add_argument("--by", default="human")
     s.set_defaults(fn=cmd_approve)
+
+    s = sub.add_parser("amend", help="record a requirement change after approval: add or revise tasks")
+    s.add_argument("run")
+    s.add_argument("file", help="JSON task specs; an existing id revises that task (given fields only)")
+    s.add_argument("--note", required=True, help="the requirement change and who asked for it")
+    s.add_argument("--by", default="human")
+    s.set_defaults(fn=cmd_amend)
 
     s = sub.add_parser("claim", help="claim the next todo task (or --id)")
     s.add_argument("run")

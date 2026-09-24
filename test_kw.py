@@ -201,6 +201,65 @@ class KwTest(unittest.TestCase):
         code, _ = run_kw("tasks", "set", self.run_dir, self.write("t.json", [{"id": "z", "goal": "g", "done_when": "d"}]), check=False)
         self.assertEqual(code, 2)
 
+    def finish_all(self):
+        while True:
+            self.execute_all()
+            r = self.pass_all_done()
+            if r["phase"] != "executing":
+                return r
+
+    def test_amend_reopens_finished_run_and_keeps_unaffected_verdicts(self):
+        self.to_executing(n=3)
+        self.assertEqual(self.finish_all()["phase"], "done")
+        change = [{"id": "t4", "goal": "soft cut", "done_when": "y"},
+                  {"id": "t3", "depends_on": ["t1", "t2", "t4"], "done_when": "includes soft cut"}]
+        code, _ = run_kw("amend", self.run_dir, self.write("a.json", change[:1]), "--note", "n", check=False)
+        self.assertEqual(code, 2)  # acceptance must cover the new task
+        _, r = run_kw("amend", self.run_dir, self.write("a.json", change), "--note", "Martin: add soft cut")
+        self.assertEqual((r["phase"], r["added"], r["reopened"]), ("executing", ["t4"], ["t3", "t4"]))
+        tasks = kw.status_of(self.run_dir)["tasks"]
+        self.assertEqual([tasks[t]["status"] for t in ("t1", "t2", "t3", "t4")],
+                         ["verified", "verified", "todo", "todo"])
+        self.assertEqual((tasks["t3"]["goal"], tasks["t3"]["done_when"]), ("goal 3", "includes soft cut"))
+        self.assertEqual(self.finish_all()["phase"], "done")
+        _, s = run_kw("status", self.run_dir)
+        self.assertEqual(s["amendments"][0]["note"], "Martin: add soft cut")
+        self.assertEqual(s["counts"]["verified"], 4)
+
+    def test_amend_revision_restarts_task_and_dependents(self):
+        self.staged()
+        self.execute_all()
+        run_kw("verdict", self.run_dir, "r1", "fail", "--findings", self.findings("a"))
+        run_kw("verdict", self.run_dir, "r2", "pass")
+        run_kw("finish", self.run_dir)
+        self.execute_all()
+        self.pass_all_done()
+        self.execute_all()
+        self.pass_all_done()
+        _, r = run_kw("amend", self.run_dir, self.write("a.json", [{"id": "r1", "goal": "new scope"}]), "--note", "n")
+        self.assertEqual(r["reopened"], ["r1", "p1", "c1"])
+        tasks = kw.status_of(self.run_dir)["tasks"]
+        self.assertEqual((tasks["r1"]["attempts"], len(tasks["r1"]["history"])), (0, 1))
+        self.assertEqual(tasks["r2"]["status"], "verified")
+        self.assertEqual(self.finish_all()["phase"], "done")
+
+    def test_amend_refuses_to_reset_running_work(self):
+        self.to_executing(n=3)
+        run_kw("claim", self.run_dir, "--owner", "w", "--id", "t1")
+        code, err = run_kw("amend", self.run_dir, self.write("a.json", [{"id": "t1", "goal": "g"}]), "--note", "n", check=False)
+        self.assertIn("t1", err["error"])
+        run_kw("amend", self.run_dir, self.write("a.json", [{"id": "t2", "goal": "g"}]), "--note", "n")
+        self.complete("t1")  # unaffected worker keeps its claim
+        dup = [{"id": "t2", "goal": "g"}, {"id": "t2", "goal": "h"}]
+        code, _ = run_kw("amend", self.run_dir, self.write("a.json", dup), "--note", "n", check=False)
+        self.assertEqual(code, 2)
+
+    def test_amend_requires_approved_plan(self):
+        run_kw("init", self.run_dir)
+        run_kw("phase", self.run_dir, "planning")
+        code, _ = run_kw("amend", self.run_dir, self.write("a.json", [{"id": "a", "goal": "g", "done_when": "d", "acceptance": True}]), "--note", "n", check=False)
+        self.assertEqual(code, 2)
+
     def staged(self, max_rounds=3, max_repairs=2):
         run_kw("init", self.run_dir, "--verification", "per-task", "--max-rounds", max_rounds, "--max-repairs", max_repairs)
         run_kw("phase", self.run_dir, "planning")

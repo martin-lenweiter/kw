@@ -132,6 +132,13 @@ logs before retrying failed processes. `kw resume <run>` marks expired
 claims as needing attention; it does not prove that an external write failed. Check the destination
 before repeating publication and keep one designated writer.
 
+**Requirement changes.** Only the user changes approved scope. Record the
+change with `kw amend <run> <file> --note "requested change"`. The file lists
+new tasks and revised fields for existing tasks. kw reopens the revised tasks,
+their dependents, and the acceptance task. Other verified work stays verified.
+A finished run returns to `executing`. The ledger keeps the original plan
+and each amendment.
+
 **Repairs.** Verification findings drive focused repair, with bounded retries.
 After an authorized fix to a `needs-human` task, use
 `kw resolve <run> <task> --note "what was fixed" --output <path>` to return it

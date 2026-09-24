@@ -69,4 +69,5 @@ Record in `plan.md` and show the user:
 
 Run `kw phase <run> awaiting-approval`. Only the user approves with
 `kw approve <run>`. Approval freezes task goals and `done_when`; implementation
-methods remain flexible within that scope.
+methods remain flexible within that scope. Only the user can change the frozen
+scope later, through `kw amend` (see kw-run).

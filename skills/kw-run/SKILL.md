@@ -48,6 +48,26 @@ create a separate verifier for every task by default.
   its saved identifier. A timeout does not establish that publication failed.
 - Respect quotas and permissions. Do not switch harnesses to bypass a limit.
 
+## Requirement changes
+
+When the user changes requirements during the run or after it ends, record the
+change with `kw amend`. Do not continue the work outside kw state.
+
+1. Write a JSON list of task specs. A new id adds a task. An existing id revises
+   that task with the fields given, and the task starts over. Revise the
+   acceptance task's `done_when` and `depends_on` so that it covers the changed
+   result.
+2. Stop workers on the tasks you revise and on their dependents.
+3. If the change adds external writes, paid tools, or permissions beyond the
+   approved plan, show the amendment to the user before you record it. In
+   other cases, the user's request is the approval.
+4. Run `kw amend <run> <file> --by <user> --note "<requested change>"`.
+   Add the change to `plan.md` and `decisions.md`.
+
+kw reopens the revised tasks, their dependents, and the acceptance task. Other
+verified work stays verified. New attempts write to new output directories, so
+earlier verified outputs remain available.
+
 For a `needs-human` task, surface its findings. After an authorized fix, record
 it in `decisions.md` and use
 `kw resolve <run> <id> --note "what was fixed"` to return it for review.
