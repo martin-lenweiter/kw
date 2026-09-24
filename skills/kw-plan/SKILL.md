@@ -79,6 +79,12 @@ if it finds blocking issues, and note what changed.
 
 ## 5. Approval
 
+Before asking for approval, record in plan.md and show the user the worker
+allocation: task groups, agent roles, runtime, concrete model and reasoning
+level where configurable, and maximum concurrent workers. Resolve task model
+tiers against the available runtime; mark any unresolved choice explicitly.
+Do not present tiers such as "standard" or "strong" as model identities.
+
 `kw phase <run> awaiting-approval`, then show the user a short summary: task
 count, approach, costs, critique outcome. Only the user approves:
 `kw approve <run>`. After approval the plan and `done_when` are frozen.
