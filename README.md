@@ -78,6 +78,10 @@ kw status runs/partner-research
 kw graph runs/partner-research   # task graph by dependency level, with the current phase
 ```
 
+`kw graph --format tree` draws an ASCII tree from the acceptance task.
+`--format mermaid` and `--format dot` print diagram source, coloured by task
+status, for Markdown viewers that render Mermaid or for Graphviz.
+
 Use `--harness codex` for Codex. The loop pauses for answers or plan approval.
 Record requested answers in the run's `questions.md`, then continue planning:
 

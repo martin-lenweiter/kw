@@ -18,6 +18,7 @@ import uuid
 import shlex
 import subprocess
 import sys
+import textwrap
 import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
@@ -456,12 +457,6 @@ def render_graph(state, width=60):
             depth[tid] = 1 + max((level(d) for d in tasks[tid]["depends_on"]), default=-1)
         return depth[tid]
 
-    def mark(task):
-        s = task["status"]
-        if s == "todo":
-            return " " if ready(state, task) else "."
-        return {"verified": "x", "done": "~", "running": ">", "needs-human": "!"}[s]
-
     c = counts(state)
     summary = [f"{c['verified']}/{len(tasks)} verified"]
     summary += [f"{c[s]} {label}" for s, label in (("running", "running"), ("done", "awaiting verification"),
@@ -476,7 +471,7 @@ def render_graph(state, width=60):
         for n, tid in enumerate(t for t in state["order"] if level(t) == lv):
             task = tasks[tid]
             goal = task["goal"] if len(task["goal"]) <= width else task["goal"][:width - 1] + "…"
-            row = f"{f'L{lv}' if n == 0 else '':<4}[{mark(task)}] {tid:<{idw}}  {goal:<{goalw}}"
+            row = f"{f'L{lv}' if n == 0 else '':<4}[{task_mark(state, task)}] {tid:<{idw}}  {goal:<{goalw}}"
             extras = []
             if task["acceptance"]:
                 extras.append("acceptance")
@@ -491,11 +486,97 @@ def render_graph(state, width=60):
     return "\n".join(lines)
 
 
+def task_mark(state, task):
+    if task["status"] == "todo":
+        return " " if ready(state, task) else "."
+    return {"verified": "x", "done": "~", "running": ">", "needs-human": "!"}[task["status"]]
+
+
+def render_tree(state, width=60):
+    """ASCII tree from the acceptance task down through its dependencies."""
+    tasks = state["tasks"]
+    roots = [t for t in state["order"] if tasks[t]["acceptance"]] or [
+        t for t in state["order"] if not any(t in x["depends_on"] for x in tasks.values())]
+    lines, seen = [], set()
+
+    def walk(tid, prefix, last, top):
+        task = tasks[tid]
+        goal = task["goal"] if len(task["goal"]) <= width else task["goal"][:width - 1] + "…"
+        branch = "" if top else ("`-- " if last else "|-- ")
+        owner = f"  ({task['owner']})" if task.get("owner") else ""
+        again = tid in seen and task["depends_on"]
+        lines.append(f"{prefix}{branch}[{task_mark(state, task)}] {tid}  {goal}{owner}" + ("  (see above)" if again else ""))
+        if again:
+            return
+        seen.add(tid)
+        child_prefix = prefix + ("" if top else ("    " if last else "|   "))
+        deps = task["depends_on"]
+        for n, dep in enumerate(deps):
+            walk(dep, child_prefix, n == len(deps) - 1, False)
+
+    for root in roots:
+        walk(root, "", True, True)
+    phase = state["phase"]
+    return "\n".join([f"{state.get('title') or 'KW run'} · {phase} · round {state['round']}", ""] + lines
+                     + ["", "  ".join(f"[{m}] {label}" for m, label in MARKS), "", f"Next: {next_action(state)}"])
+
+
+# Fill colours per status for mermaid and dot.
+STATUS_COLOURS = {"verified": "#b7e4c7", "done": "#d0ebff", "running": "#ffe066",
+                  "ready": "#ffffff", "waiting": "#e9ecef", "needs-human": "#ffa8a8"}
+
+
+def graph_status(state, task):
+    if task["status"] == "todo":
+        return "ready" if ready(state, task) else "waiting"
+    return task["status"]
+
+
+def render_mermaid(state):
+    # Positional node ids: task ids like "end" or "graph" are Mermaid keywords.
+    node = {tid: f"n{i}" for i, tid in enumerate(state["order"])}
+    title = f"{state.get('title') or 'KW run'} · {state['phase']} · round {state['round']}".replace('"', "'")
+    lines = ["---", f'title: "{title}"', "---", "flowchart LR"]
+    for tid in state["order"]:
+        task = state["tasks"][tid]
+        label = f"{tid}<br/>{task['goal']}".replace('"', "'")
+        if task.get("owner"):
+            label += f"<br/><i>{task['owner']}</i>"
+        shape = ('{{"%s"}}' if task["acceptance"] else '["%s"]') % label
+        lines.append(f"  {node[tid]}{shape}:::{graph_status(state, task).replace('-', '_')}")
+    for tid in state["order"]:
+        for dep in state["tasks"][tid]["depends_on"]:
+            lines.append(f"  {node[dep]} --> {node[tid]}")
+    for status, colour in STATUS_COLOURS.items():
+        lines.append(f"  classDef {status.replace('-', '_')} fill:{colour},stroke:#495057")
+    return "\n".join(lines)
+
+
+def render_dot(state):
+    esc = lambda text: text.replace("\\", "\\\\").replace('"', '\\"')
+    title = esc(f"{state.get('title') or 'KW run'} · {state['phase']} · round {state['round']}")
+    lines = ["digraph kw {", "  rankdir=LR;", f'  label="{title}"; labelloc=t;',
+             '  node [shape=box, style="rounded,filled", fontname="Helvetica"];']
+    for tid in state["order"]:
+        task = state["tasks"][tid]
+        status = graph_status(state, task)
+        label = "\\n".join(esc(x) for x in (tid, *textwrap.wrap(task["goal"], 40), task.get("owner")) if x)
+        extra = ", peripheries=2" if task["acceptance"] else ""
+        lines.append(f'  "{tid}" [label="{label}", fillcolor="{STATUS_COLOURS[status]}", tooltip="{status}"{extra}];')
+    for tid in state["order"]:
+        for dep in state["tasks"][tid]["depends_on"]:
+            lines.append(f'  "{dep}" -> "{tid}";')
+    return "\n".join(lines + ["}"])
+
+
+GRAPH_FORMATS = {"text": render_graph, "tree": render_tree, "mermaid": render_mermaid, "dot": render_dot}
+
+
 def cmd_graph(args):
     run = Run(args.run)
     with run.locked():
         state = run.load()
-    return render_graph(state)
+    return GRAPH_FORMATS[args.format](state)
 
 
 def cmd_phase(args):
@@ -1076,6 +1157,8 @@ def build_parser():
 
     s = sub.add_parser("graph", help="draw the task graph and show where the run is")
     s.add_argument("run")
+    s.add_argument("--format", choices=sorted(GRAPH_FORMATS), default="text",
+                   help="text: levels (default); tree: ASCII tree from acceptance; mermaid or dot: diagram source")
     s.set_defaults(fn=cmd_graph)
 
     s = sub.add_parser("phase", help="move the run to another phase")
