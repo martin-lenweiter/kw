@@ -17,7 +17,10 @@ def run_kw(*args, check=True):
     p = subprocess.run(KW + [str(a) for a in args], capture_output=True, text=True)
     if check and p.returncode != 0:
         raise AssertionError(p.stderr)
-    return p.returncode, json.loads(p.stdout or p.stderr)
+    try:
+        return p.returncode, json.loads(p.stdout or p.stderr)
+    except json.JSONDecodeError:  # argparse usage errors are plain text
+        return p.returncode, {"error": p.stderr}
 
 
 class KwTest(unittest.TestCase):
@@ -146,7 +149,7 @@ class KwTest(unittest.TestCase):
         run_kw("finish", self.run_dir)
         self.execute_all()
         run_kw("verdict", self.run_dir, "t1", "fail", "--findings", self.findings("b"))
-        _, r = run_kw("finish", self.run_dir)
+        _, r = run_kw("finish", self.run_dir)  # t1 already had a repair: cap applies
         self.assertEqual(r["phase"], "partial")
         _, s = run_kw("status", self.run_dir)
         self.assertIn("round cap", s["tasks"][0]["stop_reason"])
@@ -273,6 +276,41 @@ class KwTest(unittest.TestCase):
         tasks = [{"id": "a", "goal": "g", "done_when": "d", "model": "genius", "acceptance": True}]
         code, _ = run_kw("tasks", "set", self.run_dir, self.write("t.json", tasks), check=False)
         self.assertEqual(code, 2)
+
+    def test_first_failure_in_last_round_still_gets_a_repair(self):
+        # a1 fails in round 1 and uses round 2; a2 depends on a1 and first fails in round 2 (the cap)
+        run_kw("init", self.run_dir, "--max-rounds", "2")
+        run_kw("phase", self.run_dir, "planning")
+        tasks = [{"id": "a1", "goal": "g", "done_when": "x"},
+                 {"id": "a2", "goal": "g", "done_when": "x", "depends_on": ["a1"], "acceptance": True}]
+        run_kw("tasks", "set", self.run_dir, self.write("t.json", tasks))
+        run_kw("phase", self.run_dir, "awaiting-approval")
+        run_kw("approve", self.run_dir)
+        self.execute_all()
+        run_kw("verdict", self.run_dir, "a1", "fail", "--findings", self.findings("x"))
+        run_kw("finish", self.run_dir)
+        self.execute_all()
+        run_kw("verdict", self.run_dir, "a1", "pass")
+        run_kw("finish", self.run_dir)
+        self.execute_all()
+        run_kw("verdict", self.run_dir, "a2", "fail", "--findings", self.findings("y"))
+        _, r = run_kw("finish", self.run_dir)
+        self.assertEqual(r["phase"], "executing")
+        self.assertEqual(r["repairs"], ["a2"])
+
+    def test_resolve_needs_human_then_done(self):
+        self.to_executing(n=1, max_repairs=0)
+        self.execute_all()
+        run_kw("verdict", self.run_dir, "t1", "fail", "--findings", self.findings("a"))
+        _, r = run_kw("finish", self.run_dir)
+        self.assertEqual(r["phase"], "partial")
+        code, _ = run_kw("resolve", self.run_dir, "t1", check=False)
+        self.assertEqual(code, 2)  # --note required
+        _, r = run_kw("resolve", self.run_dir, "t1", "--note", "fixed by hand", "--by", "martin")
+        self.assertEqual(r["phase"], "verifying")
+        run_kw("verdict", self.run_dir, "t1", "pass")
+        _, r = run_kw("finish", self.run_dir)
+        self.assertEqual(r["phase"], "done")
 
 
 if __name__ == "__main__":

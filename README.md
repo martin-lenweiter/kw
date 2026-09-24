@@ -62,7 +62,13 @@ becomes `needs-human` and the rest of the run continues:
 
 - The same blocking finding `key` repeats after a repair (stall).
 - The task has used `max_repairs` repairs (default 2).
-- The run has used `max_rounds` verify rounds (default 3).
+- The run has used `max_rounds` verify rounds (default 3) and the task has
+  already had a repair. A task that fails for the first time always gets one
+  repair.
+
+A person can fix a `needs-human` task and send it back through verification:
+`kw resolve <run> <task> --note "what was fixed" [--by name] [--output path]`.
+The run can then end as `done`.
 
 ## Restart safety
 

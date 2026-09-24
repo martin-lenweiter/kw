@@ -32,7 +32,7 @@ PHASES = {
     "executing": {"verifying"},
     "verifying": {"executing", "done", "partial"},
     "done": set(),
-    "partial": set(),
+    "partial": {"verifying"},  # only through kw resolve
 }
 TASK_STATUSES = {"todo", "running", "done", "verified", "needs-human"}
 TERMINAL = {"verified", "needs-human"}
@@ -117,6 +117,12 @@ def apply(state, ev):
     elif t == "release":
         for tid in ev["ids"]:
             tasks[tid].update(status="todo", owner=None, lease_until=None)
+    elif t == "resolve":
+        task = tasks[ev["id"]]
+        task.update(status="done", stop_reason=None, resolution=ev["note"])
+        if ev.get("output"):
+            task["output"] = ev["output"]
+        state["phase"] = "verifying"
     elif t == "escalate":
         for tid in ev["ids"]:
             tasks[tid]["status"] = "needs-human"
@@ -501,8 +507,12 @@ def cmd_finish(args):
             raise KwError(f"{c['done']} task(s) still await a verdict")
         if c["todo"]:
             repairs = [t["id"] for t in state["tasks"].values() if t["status"] == "todo" and t["attempts"]]
-            if repairs and state["round"] >= state["config"]["max_rounds"]:
-                run.append(state, {"type": "escalate", "ids": repairs,
+            # The run round cap stops tasks that already had a repair. A task that
+            # failed for the first time still gets one repair; stall detection and
+            # max_repairs bound it.
+            capped = [tid for tid in repairs if state["tasks"][tid]["attempts"] >= 2]
+            if capped and state["round"] >= state["config"]["max_rounds"]:
+                run.append(state, {"type": "escalate", "ids": capped,
                                    "reason": f"run round cap reached ({state['config']['max_rounds']})"})
             if counts(state)["todo"]:
                 # Only repair rounds count against max_rounds; dependency stages do not.
@@ -517,6 +527,25 @@ def cmd_finish(args):
         final = "done" if counts(state)["needs-human"] == 0 and accepted else "partial"
         run.append(state, {"type": "phase", "from": "verifying", "to": final})
     return {"phase": final, "counts": counts(state)}
+
+
+def cmd_resolve(args):
+    """A human fixed a needs-human task; send it back through verification."""
+    run = Run(args.run)
+    with run.locked():
+        state = run.load()
+        task = get_task(state, args.id)
+        if task["status"] != "needs-human":
+            raise KwError(f"task {args.id} is {task['status']}, not needs-human")
+        if state["phase"] not in ("executing", "verifying", "partial"):
+            raise KwError(f"cannot resolve in phase {state['phase']}")
+        if any(t["status"] == "running" for t in state["tasks"].values()):
+            raise KwError("tasks still running")
+        if args.output and not (run.dir / args.output).exists():
+            raise KwError(f"output not found: {args.output}")
+        run.append(state, {"type": "resolve", "id": args.id, "note": args.note,
+                           "by": args.by, "output": args.output})
+    return {"id": args.id, "status": "done", "phase": "verifying"}
 
 
 def cmd_resume(args):
@@ -600,6 +629,14 @@ def main(argv=None):
     s = sub.add_parser("finish", help="close a verify round")
     s.add_argument("run")
     s.set_defaults(fn=cmd_finish)
+
+    s = sub.add_parser("resolve", help="record a human fix for a needs-human task and re-verify it")
+    s.add_argument("run")
+    s.add_argument("id")
+    s.add_argument("--note", required=True)
+    s.add_argument("--by", default="human")
+    s.add_argument("--output")
+    s.set_defaults(fn=cmd_resolve)
 
     s = sub.add_parser("resume", help="rebuild state and release expired leases")
     s.add_argument("run")

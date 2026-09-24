@@ -44,6 +44,13 @@ example the harness's web-search budget), do not let workers mark work as
 unavailable: pause those tasks or start them on another harness
 (`codex exec`, `claude -p`) with its own quota.
 
+## Needs-human tasks
+
+When a task stops as `needs-human`, show the user its findings. If the user
+fixes it or authorizes a fix, record that in `decisions.md`, apply the fix,
+then `kw resolve <run> <id> --note "<fix>" --by <user>` and hand over to
+kw-verify.
+
 ## Rules
 
 - Follow the frozen plan. If a task cannot be done as specified, finish it with
