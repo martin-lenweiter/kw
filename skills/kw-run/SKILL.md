@@ -54,10 +54,13 @@ When the user changes requirements during the run or after it ends, record the
 change with `kw amend`. Do not continue the work outside kw state.
 
 1. Write a JSON list of task specs. A new id adds a task. An existing id revises
-   that task with the fields given, and the task starts over. Revise the
-   acceptance task's `done_when` and `depends_on` so that it covers the changed
-   result.
-2. Stop workers on the tasks you revise and on their dependents.
+   that task with the fields given, and the task starts over.
+   `{"id": "<id>", "drop": true}` removes a task that is no longer required;
+   revise its dependents so they no longer depend on it. Revise the acceptance
+   task's `done_when` and `depends_on` so that it covers the changed result.
+2. Stop workers on the tasks you revise or drop, and on their dependents.
+   Before you drop a task that already wrote to an external destination, tell
+   the user what it wrote; dropping does not undo it.
 3. If the change adds external writes, paid tools, or permissions beyond the
    approved plan, show the amendment to the user before you record it. In
    other cases, the user's request is the approval.

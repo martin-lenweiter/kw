@@ -134,7 +134,8 @@ before repeating publication and keep one designated writer.
 
 **Requirement changes.** Only the user changes approved scope. Record the
 change with `kw amend <run> <file> --note "requested change"`. The file lists
-new tasks and revised fields for existing tasks. kw reopens the revised tasks,
+new tasks, revised fields for existing tasks, and `{"id": ..., "drop": true}`
+for tasks that are no longer required. kw reopens the revised tasks,
 their dependents, and the acceptance task. Other verified work stays verified.
 A finished run returns to `executing`. The ledger keeps the original plan
 and each amendment.

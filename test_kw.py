@@ -254,6 +254,32 @@ class KwTest(unittest.TestCase):
         code, _ = run_kw("amend", self.run_dir, self.write("a.json", dup), "--note", "n", check=False)
         self.assertEqual(code, 2)
 
+    def test_amend_drops_task_and_requires_dependents_to_be_revised(self):
+        self.to_executing(n=3)
+        self.assertEqual(self.finish_all()["phase"], "done")
+        drop = self.write("a.json", [{"id": "t2", "drop": True}])
+        code, err = run_kw("amend", self.run_dir, drop, "--note", "n", check=False)
+        self.assertIn("t2", err["error"])  # acceptance still depends on t2
+        for bad in ([{"id": "t3", "drop": True}], [{"id": "zz", "drop": True}]):
+            code, _ = run_kw("amend", self.run_dir, self.write("a.json", bad), "--note", "n", check=False)
+            self.assertEqual(code, 2)  # acceptance cannot vanish; unknown ids rejected
+        change = [{"id": "t2", "drop": True}, {"id": "t3", "depends_on": ["t1"]}]
+        _, r = run_kw("amend", self.run_dir, self.write("a.json", change), "--by", "martin", "--note", "Martin: skip Attio")
+        self.assertEqual((r["dropped"], r["reopened"]), (["t2"], ["t3"]))
+        self.assertNotIn("t2", kw.status_of(self.run_dir)["tasks"])
+        self.assertEqual(self.finish_all()["phase"], "done")
+        report = (self.run_dir / "report.md").read_text()
+        self.assertIn("Martin: skip Attio", report)
+        self.assertIn("Dropped: t2", report)
+        self.assertIn("t2", (self.run_dir / "ledger.jsonl").read_text())
+
+    def test_amend_refuses_to_drop_running_task(self):
+        self.to_executing(n=3)
+        run_kw("claim", self.run_dir, "--owner", "w", "--id", "t2")
+        change = [{"id": "t2", "drop": True}, {"id": "t3", "depends_on": ["t1"]}]
+        code, err = run_kw("amend", self.run_dir, self.write("a.json", change), "--note", "n", check=False)
+        self.assertIn("t2", err["error"])
+
     def test_amend_requires_approved_plan(self):
         run_kw("init", self.run_dir)
         run_kw("phase", self.run_dir, "planning")

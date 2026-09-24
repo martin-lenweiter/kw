@@ -115,8 +115,12 @@ def apply(state, ev):
             tasks[spec["id"]] = new_task(state, spec)
             state["order"].append(spec["id"])
     elif t == "amend":
-        # Listed tasks get their new spec and start over; their dependents and
-        # the acceptance task are reopened. Unaffected verified work stays.
+        # Dropped tasks leave the graph (the ledger keeps them). Listed tasks get
+        # their new spec and start over; their dependents and the acceptance
+        # task are reopened. Unaffected verified work stays.
+        for tid in ev.get("drop", []):
+            del tasks[tid]
+            state["order"].remove(tid)
         for spec in ev["tasks"]:
             fresh = new_task(state, spec)
             if spec["id"] in tasks:
@@ -129,7 +133,8 @@ def apply(state, ev):
         for task in tasks.values():
             if task["acceptance"]:
                 task.update(status="todo", output=None, stop_reason=None)
-        state["amendments"].append({"by": ev.get("by"), "note": ev["note"], "tasks": [x["id"] for x in ev["tasks"]]})
+        state["amendments"].append({"by": ev.get("by"), "note": ev["note"], "tasks": [x["id"] for x in ev["tasks"]],
+                                   "dropped": ev.get("drop", [])})
         if state["phase"] in ("verifying", "done", "partial"):
             state["phase"] = "executing"
     elif t == "approve":
@@ -323,6 +328,12 @@ def write_report(run, state):
             lines.append(f"  Unresolved: {task['stop_reason']}")
         for finding in task.get("last_findings", []) if task["status"] != "verified" else []:
             lines.append(f"  Finding: {finding['text']}")
+    if state.get("amendments"):
+        lines += ["", "## Amendments", ""]
+    for n, amendment in enumerate(state.get("amendments", []), 1):
+        lines.append(f"- Amendment {n} by {amendment['by']}: {amendment['note']}")
+        if amendment.get("dropped"):
+            lines.append(f"  Dropped: {', '.join(amendment['dropped'])}")
     tmp = run.dir / "report.md.tmp"
     tmp.write_text("\n".join(lines) + "\n")
     os.replace(tmp, run.dir / "report.md")
@@ -520,25 +531,31 @@ def cmd_tasks_set(args):
 
 
 def cmd_amend(args):
-    """Record an approved requirement change: add tasks or revise existing ones."""
-    changes = read_specs(args.file)
-    if not changes:
+    """Record an approved requirement change: add, revise, or drop tasks."""
+    specs = read_specs(args.file)
+    if not specs:
         raise KwError("amendment has no tasks")
-    ids = [c.get("id") for c in changes]
+    ids = [c.get("id") for c in specs]
     if len(ids) != len(set(ids)):
         raise KwError("amendment lists a task id more than once")
+    drops = [c["id"] for c in specs if c.get("drop")]
+    changes = [c for c in specs if not c.get("drop")]
     run = Run(args.run)
     with run.locked():
         state = run.load()
         require_phase(state, "executing", "verifying", "done", "partial")
         tasks = state["tasks"]
+        unknown = [tid for tid in drops if tid not in tasks]
+        if unknown:
+            raise KwError(f"cannot drop unknown task {', '.join(unknown)}")
         merged = []
         for c in changes:
             base = tasks.get(c.get("id"))
             spec = {k: base[k] for k in TASK_SPEC_KEYS} if base else {}
             merged.append({**spec, **c})
-        by_id = {tid: {k: tasks[tid][k] for k in TASK_SPEC_KEYS} for tid in state["order"]}
-        new_ids = [i for i in ids if i not in by_id]
+        by_id = {tid: {k: tasks[tid][k] for k in TASK_SPEC_KEYS}
+                 for tid in state["order"] if tid not in drops}
+        new_ids = [c.get("id") for c in changes if c.get("id") not in tasks]
         by_id.update({m.get("id"): m for m in merged})
         validate_specs(list(by_id.values()))
         # Refuse to reset work that a worker still holds.
@@ -550,13 +567,13 @@ def cmd_amend(args):
                 if tid not in affected and affected.intersection(sp.get("depends_on", [])):
                     affected.add(tid)
                     changed = True
-        busy = sorted(tid for tid in affected if tid in tasks and tasks[tid]["status"] == "running")
+        busy = sorted(tid for tid in affected | set(drops) if tid in tasks and tasks[tid]["status"] == "running")
         if busy:
             raise KwError(f"stop the workers on {', '.join(busy)} before amending them")
-        run.append(state, {"type": "amend", "tasks": merged, "by": args.by, "note": args.note})
+        run.append(state, {"type": "amend", "tasks": merged, "drop": drops, "by": args.by, "note": args.note})
         reopened = [tid for tid in state["order"] if tid in affected]
     return {"phase": state["phase"], "amendment": len(state["amendments"]),
-            "added": new_ids, "reopened": reopened}
+            "added": new_ids, "dropped": drops, "reopened": reopened}
 
 
 def cmd_approve(args):
@@ -1014,7 +1031,7 @@ def build_parser():
 
     s = sub.add_parser("amend", help="record a requirement change after approval: add or revise tasks")
     s.add_argument("run")
-    s.add_argument("file", help="JSON task specs; an existing id revises that task (given fields only)")
+    s.add_argument("file", help='JSON task specs; an existing id revises that task (given fields only); {"id": ..., "drop": true} removes it')
     s.add_argument("--note", required=True, help="the requirement change and who asked for it")
     s.add_argument("--by", default="human")
     s.set_defaults(fn=cmd_amend)
