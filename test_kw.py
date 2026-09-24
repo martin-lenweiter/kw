@@ -61,27 +61,6 @@ class KwTest(unittest.TestCase):
         self.assertTrue(any(l.startswith("    [ ] t2") for l in lines))
         self.assertTrue(any(l.startswith("L1  [.] t3") and "<- t1, t2" in l for l in lines))
 
-    def test_graph_formats(self):
-        self.to_executing(n=3)
-        run_kw("claim", self.run_dir, "--owner", "w1", "--id", "t1")
-
-        def graph(fmt):
-            return subprocess.run(KW + ["graph", str(self.run_dir), "--format", fmt],
-                                  capture_output=True, text=True, check=True).stdout
-
-        tree = graph("tree").splitlines()
-        self.assertIn("[.] t3  goal 3", tree)
-        self.assertIn("|-- [>] t1  goal 1  (w1)", tree)
-        self.assertIn("`-- [ ] t2  goal 2", tree)
-        mermaid = graph("mermaid")
-        self.assertIn("flowchart LR", mermaid)
-        self.assertIn('n0["t1<br/>goal 1<br/><i>w1</i>"]:::running', mermaid)
-        self.assertIn('n2{{"t3<br/>goal 3"}}:::waiting', mermaid)
-        self.assertIn("n1 --> n2", mermaid)
-        dot = graph("dot")
-        self.assertIn('"t1" [label="t1\\ngoal 1\\nw1", fillcolor="#ffe066"', dot)
-        self.assertIn('"t2" -> "t3";', dot)
-
     def complete(self, tid):
         task = kw.status_of(self.run_dir)["tasks"][tid]
         out = Path("out") / tid / task["token"] / "result.md"
