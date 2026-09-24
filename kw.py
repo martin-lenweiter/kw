@@ -12,8 +12,11 @@ import contextlib
 import fcntl
 import json
 import os
+import shlex
+import subprocess
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 LEDGER = "ledger.jsonl"
@@ -572,7 +575,167 @@ def cmd_rebuild(args):
     return {"phase": state["phase"], "events": state["events"]}
 
 
-def main(argv=None):
+# ---------------------------------------------------------------------- loop
+# kw loop drives a run headlessly through any CLI agent harness. It never
+# decides for the human: it stops at awaiting-answers and awaiting-approval.
+
+SKILLS = Path(__file__).resolve().parent / "skills"
+HARNESSES = {
+    "claude": {
+        "cmd": ["claude", "-p", "{prompt}", "--model", "{model}", "--permission-mode", "acceptEdits",
+                "--allowedTools=Bash,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch"],
+        "models": {"fast": "haiku", "standard": "sonnet", "strong": "opus"},
+    },
+    "codex": {
+        "cmd": ["codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write",
+                "-c", "model_reasoning_effort={model}", "{prompt}"],
+        "models": {"fast": "low", "standard": "medium", "strong": "high"},
+    },
+}
+
+
+def loop_config(run_dir, harness):
+    """Harness template, overridable per run in <run>/kw-loop.json."""
+    cfg = json.loads(json.dumps(HARNESSES[harness])) if harness in HARNESSES else {"cmd": [], "models": {}}
+    path = Path(run_dir) / "kw-loop.json"
+    if path.exists():
+        cfg.update(json.loads(path.read_text()).get(harness, {}))
+    if not cfg.get("cmd"):
+        raise KwError(f"no command template for harness {harness}")
+    return cfg
+
+
+def agent_call(cfg, run_dir, name, model_tier, prompt, timeout):
+    model = cfg["models"].get(model_tier, model_tier)
+    cmd = [part.replace("{model}", model).replace("{prompt}", prompt).replace("{run}", str(run_dir))
+           for part in cfg["cmd"]]
+    logs = Path(run_dir) / "logs"
+    logs.mkdir(exist_ok=True)
+    log = logs / f"{name}-{int(time.time())}.log"
+    with open(log, "w") as fh:
+        fh.write("$ " + shlex.join([c if c != prompt else "<prompt>" for c in cmd]) + "\n\n")
+        fh.flush()
+        try:
+            p = subprocess.run(cmd, cwd=run_dir, stdin=subprocess.DEVNULL, stdout=fh,
+                               stderr=subprocess.STDOUT, timeout=timeout, text=True)
+            code = p.returncode
+        except subprocess.TimeoutExpired:
+            code = 124
+    text = log.read_text()
+    output = None
+    for line in reversed(text.splitlines()):
+        if line.strip().startswith("KW_OUTPUT:"):
+            output = line.split(":", 1)[1].strip()
+            break
+    return code, output, log
+
+
+def status_of(run_dir):
+    run = Run(run_dir)
+    with run.locked():
+        return run.load()
+
+
+def plan_prompt(run_dir, phase):
+    return (f"You are the kw planner for the run in {run_dir}. Follow {SKILLS}/kw-plan/SKILL.md exactly. "
+            f"The run is in phase {phase}. Use the kw CLI (on PATH as kw) for every state change. "
+            "Stop as soon as the run reaches awaiting-answers or awaiting-approval; never approve the plan yourself.")
+
+
+def work_prompt(run_dir, task):
+    repair = ""
+    if task.get("attempts"):
+        repair = ("This is a repair. Fix every blocking finding below and do not redo passing work. "
+                  f"Findings: {json.dumps(task.get('last_findings', []), ensure_ascii=False)} ")
+    deps = task.get("dependencies") or {}
+    return (f"You are a kw worker for task {task['claimed']} in the run at {run_dir}. "
+            f"Follow {SKILLS}/kw-run/SKILL.md for the worker rules. Read brief.md, plan.md, questions.md, "
+            f"decisions.md (if present) and the inputs the task names. Task goal: {task['goal']} "
+            f"done_when: {task['done_when']} Dependency outputs: {json.dumps(deps, ensure_ascii=False)} {repair}"
+            f"Write your result to out/{task['claimed']}.<ext> (write a temp file, then rename). "
+            "Do not run kw. End your reply with one line: KW_OUTPUT: <path relative to the run dir>.")
+
+
+def verify_prompt(run_dir, tid):
+    return (f"You are the independent kw verifier for task {tid} in the run at {run_dir}. "
+            f"Follow {SKILLS}/kw-verify/SKILL.md exactly for this one task, including writing findings "
+            f"and recording the verdict with: kw verdict {run_dir} {tid} pass|fail --findings <file>. "
+            "Do not verify other tasks and do not run kw finish.")
+
+
+def cmd_loop(args):
+    run_dir = Path(args.run).resolve()
+    cfg = loop_config(run_dir, args.harness)
+    log = []
+    for _ in range(args.max_steps):
+        state = status_of(run_dir)
+        phase = state["phase"]
+        if phase in ("awaiting-answers", "awaiting-approval", "done", "partial"):
+            return {"stopped": phase, "next": next_action(state), "steps": log}
+        if phase in ("clarifying", "planning"):
+            code, _, lg = agent_call(cfg, run_dir, f"plan-{phase}", "strong", plan_prompt(run_dir, phase), args.timeout)
+            log.append({"role": "planner", "phase": phase, "exit": code, "log": str(lg)})
+            if status_of(run_dir)["phase"] == phase:
+                return {"stopped": phase, "error": "planner made no progress", "steps": log}
+            continue
+        if phase == "executing":
+            run_json(["resume", str(run_dir)])
+            claims = []
+            while True:
+                r = run_json(["claim", str(run_dir), "--owner", f"kw-loop-{args.harness}"])
+                if not r.get("claimed"):
+                    break
+                claims.append(r)
+            if not claims:
+                if any(t["status"] == "running" for t in status_of(run_dir)["tasks"].values()):
+                    return {"stopped": phase, "error": "tasks running under another owner", "steps": log}
+                r = run_json(["phase", str(run_dir), "verifying"])
+                log.append({"role": "orchestrator", "phase": "verifying", "result": r})
+                continue
+
+            def work(task):
+                code, output, lg = agent_call(cfg, run_dir, f"work-{task['claimed']}", task.get("model", "standard"),
+                                              work_prompt(run_dir, task), args.timeout)
+                if code == 0 and output and (run_dir / output).exists():
+                    run_json(["done", str(run_dir), task["claimed"], "--output", output])
+                    return {"task": task["claimed"], "done": output, "log": str(lg)}
+                return {"task": task["claimed"], "exit": code, "output": output, "log": str(lg),
+                        "note": "left running; its lease expires and kw resume retries it"}
+
+            with ThreadPoolExecutor(max_workers=len(claims)) as ex:
+                log.extend(ex.map(work, claims))
+            if any("done" not in x for x in log[-len(claims):]):
+                return {"stopped": phase, "error": "worker(s) failed; see logs", "steps": log}
+            continue
+        if phase == "verifying":
+            pending = [t["id"] for t in state["tasks"].values() if t["status"] == "done"]
+            if pending:
+                def check(tid):
+                    tier = state["tasks"][tid].get("model", "standard")
+                    code, _, lg = agent_call(cfg, run_dir, f"verify-{tid}", tier, verify_prompt(run_dir, tid), args.timeout)
+                    return {"task": tid, "verifier_exit": code, "log": str(lg)}
+                with ThreadPoolExecutor(max_workers=len(pending)) as ex:
+                    log.extend(ex.map(check, pending))
+                left = [t["id"] for t in status_of(run_dir)["tasks"].values() if t["status"] == "done"]
+                if left:
+                    return {"stopped": phase, "error": f"no verdict recorded for {left}", "steps": log}
+            r = run_json(["finish", str(run_dir)])
+            log.append({"role": "orchestrator", "finish": r})
+            continue
+        return {"stopped": phase, "steps": log}
+    return {"stopped": "max-steps", "steps": log}
+
+
+def run_json(argv):
+    """Run a kw command in-process (thread-safe, no stdout) and return its result or error."""
+    args = build_parser().parse_args(argv)
+    try:
+        return args.fn(args)
+    except KwError as e:
+        return {"error": str(e)}
+
+
+def build_parser():
     p = argparse.ArgumentParser(prog="kw", description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="cmd", required=True)
 
@@ -647,7 +810,17 @@ def main(argv=None):
     s.add_argument("run")
     s.set_defaults(fn=cmd_rebuild)
 
-    args = p.parse_args(argv)
+    s = sub.add_parser("loop", help="drive the run headlessly through a CLI agent harness")
+    s.add_argument("run")
+    s.add_argument("--harness", default="claude", help="claude, codex, or a name defined in <run>/kw-loop.json")
+    s.add_argument("--timeout", type=int, default=3600, help="seconds per agent call")
+    s.add_argument("--max-steps", type=int, default=50)
+    s.set_defaults(fn=cmd_loop)
+    return p
+
+
+def main(argv=None):
+    args = build_parser().parse_args(argv)
     try:
         result = args.fn(args)
     except KwError as e:

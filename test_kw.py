@@ -312,6 +312,24 @@ class KwTest(unittest.TestCase):
         _, r = run_kw("finish", self.run_dir)
         self.assertEqual(r["phase"], "done")
 
+    def test_loop_end_to_end_with_fake_harness(self):
+        run_kw("init", self.run_dir)
+        fake = Path(__file__).with_name("tests_fake_agent.py")
+        (self.run_dir / "kw-loop.json").write_text(json.dumps({"fake": {
+            "cmd": [sys.executable, str(fake), "{model}", "{prompt}"],
+            "models": {"fast": "m-fast", "standard": "m-std", "strong": "m-strong"}}}))
+        _, r = run_kw("loop", self.run_dir, "--harness", "fake")
+        self.assertEqual(r["stopped"], "awaiting-approval")  # human gate respected
+        run_kw("approve", self.run_dir)
+        _, r = run_kw("loop", self.run_dir, "--harness", "fake")
+        self.assertEqual(r["stopped"], "done", r)
+        _, s = run_kw("status", self.run_dir)
+        self.assertEqual(s["counts"]["verified"], 3)
+        t1 = [t for t in s["tasks"] if t["id"] == "t1"][0]
+        self.assertEqual(t1["attempts"], 1)  # one repair after the fake verifier failed it
+        self.assertEqual((self.run_dir / "out" / "t1.calls").read_text().split(), ["m-fast", "m-fast"])
+        self.assertEqual((self.run_dir / "out" / "acc.calls").read_text().split(), ["m-strong"])
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -16,6 +16,25 @@ own.
 - `skills/kw-verify`: gate 3. A fresh-context verifier records pass or fail
   with keyed findings.
 
+## Headless: kw loop
+
+`kw loop <run> [--harness claude|codex] [--timeout 3600]` drives a run with no
+open session. It runs the planner until your questions or the approval gate,
+then (after `kw approve`) claims tasks up to the resource capacities, runs one
+worker process per task in parallel, runs one verifier per executed task,
+closes rounds with `kw finish`, and stops at `done`, `partial` or any human
+gate. Model tiers map to harness models (Claude: haiku / sonnet / opus; Codex:
+reasoning low / medium / high). Override or add a harness in
+`<run>/kw-loop.json`:
+
+```json
+{"claude": {"models": {"standard": "sonnet"}},
+ "mine": {"cmd": ["my-agent", "--model", "{model}", "{prompt}"], "models": {"fast": "a", "standard": "b", "strong": "c"}}}
+```
+
+Agent logs go to `<run>/logs/`. A worker that fails leaves its task running;
+the lease expires and the next `kw loop` retries it.
+
 ## Run directory
 
 ```
