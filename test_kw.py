@@ -40,6 +40,8 @@ class KwTest(unittest.TestCase):
         run_kw("init", self.run_dir, *flags)
         run_kw("phase", self.run_dir, "planning")
         tasks = [{"id": f"t{i}", "goal": f"goal {i}", "done_when": "x"} for i in range(1, n + 1)]
+        tasks[-1]["acceptance"] = True
+        tasks[-1]["depends_on"] = [x["id"] for x in tasks[:-1]]
         run_kw("tasks", "set", self.run_dir, self.write("tasks.json", tasks))
         run_kw("phase", self.run_dir, "awaiting-approval")
         run_kw("approve", self.run_dir)
@@ -63,7 +65,7 @@ class KwTest(unittest.TestCase):
         run_kw("phase", self.run_dir, "planning")
         code, err = run_kw("phase", self.run_dir, "awaiting-approval", check=False)
         self.assertEqual(code, 2)  # no tasks yet
-        run_kw("tasks", "set", self.run_dir, self.write("t.json", [{"id": "a", "goal": "g", "done_when": "d"}]))
+        run_kw("tasks", "set", self.run_dir, self.write("t.json", [{"id": "a", "goal": "g", "done_when": "d", "acceptance": True}]))
         run_kw("phase", self.run_dir, "awaiting-approval")
         code, _ = run_kw("phase", self.run_dir, "executing", check=False)
         self.assertEqual(code, 2)  # must use approve
@@ -74,9 +76,31 @@ class KwTest(unittest.TestCase):
         self.to_executing()
         self.execute_all()
         run_kw("verdict", self.run_dir, "t1", "pass")
+        _, r = run_kw("finish", self.run_dir)
+        self.assertEqual(r["ready"], ["t2"])  # acceptance task runs last
+        self.execute_all()
         run_kw("verdict", self.run_dir, "t2", "pass")
         _, r = run_kw("finish", self.run_dir)
         self.assertEqual(r["phase"], "done")
+
+    def test_plan_requires_one_acceptance_task_covering_all(self):
+        run_kw("init", self.run_dir)
+        run_kw("phase", self.run_dir, "planning")
+        none = [{"id": "a", "goal": "g", "done_when": "d"}]
+        code, _ = run_kw("tasks", "set", self.run_dir, self.write("t.json", none), check=False)
+        self.assertEqual(code, 2)
+        partial = [{"id": "a", "goal": "g", "done_when": "d"}, {"id": "b", "goal": "g", "done_when": "d"},
+                   {"id": "z", "goal": "g", "done_when": "d", "acceptance": True, "depends_on": ["a"]}]
+        code, err = run_kw("tasks", "set", self.run_dir, self.write("t.json", partial), check=False)
+        self.assertEqual(code, 2)
+        self.assertIn("b", err["error"])
+
+    def test_failed_acceptance_means_partial(self):
+        self.to_executing(n=1, max_repairs=0)
+        self.execute_all()
+        run_kw("verdict", self.run_dir, "t1", "fail", "--findings", self.findings("a"))
+        _, r = run_kw("finish", self.run_dir)
+        self.assertEqual(r["phase"], "partial")
 
     def test_repair_then_pass(self):
         self.to_executing(n=1)
@@ -157,7 +181,7 @@ class KwTest(unittest.TestCase):
         self.assertEqual(s["counts"]["todo"], 1)
 
     def test_parallel_claims_never_duplicate(self):
-        self.to_executing(n=8)
+        self.to_executing(n=9)  # t9 is the acceptance task and waits
         with ThreadPoolExecutor(8) as ex:
             results = list(ex.map(lambda i: run_kw("claim", self.run_dir, "--owner", f"w{i}")[1]["claimed"], range(8)))
         self.assertEqual(sorted(results), sorted(f"t{i}" for i in range(1, 9)))
@@ -173,7 +197,7 @@ class KwTest(unittest.TestCase):
         tasks = [{"id": "r1", "goal": "g", "done_when": "x"},
                  {"id": "r2", "goal": "g", "done_when": "x"},
                  {"id": "p1", "goal": "g", "done_when": "x", "depends_on": ["r1", "r2"]},
-                 {"id": "c1", "goal": "g", "done_when": "x", "depends_on": ["p1"]}]
+                 {"id": "c1", "goal": "g", "done_when": "x", "depends_on": ["p1"], "acceptance": True}]
         run_kw("tasks", "set", self.run_dir, self.write("tasks.json", tasks))
         run_kw("phase", self.run_dir, "awaiting-approval")
         run_kw("approve", self.run_dir)

@@ -39,6 +39,13 @@ A task may list `depends_on`. It becomes claimable once every dependency is
 `verified` or `needs-human`, and its claim includes their outputs. A stage
 that only waits for dependencies does not use a repair round.
 
+## Acceptance task
+
+Each task is verified on its own. To check the whole result against the brief,
+a plan must contain exactly one task with `"acceptance": true` that depends,
+directly or transitively, on every other task. A run ends as `done` only when
+the acceptance task is verified; otherwise it ends as `partial`.
+
 ## Repair loop limits
 
 A failed task returns to `todo` for repair until one of these happens. Then it

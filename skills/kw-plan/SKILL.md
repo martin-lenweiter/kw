@@ -36,7 +36,13 @@ Write `<run>/plan.md` (approach, inputs, method, costs, risks) and
  {"id": "t02", "goal": "…", "done_when": "…", "depends_on": ["t01"]}]
 ```
 
-`depends_on` is optional. A task runs once all its dependencies are verified
+Exactly one task must have `"acceptance": true`. It depends (directly or
+through other tasks) on every other task, and its `done_when` is the brief's
+acceptance criteria applied to the whole result: outputs integrate, totals
+agree, and every brief requirement is met. kw rejects a plan without it, and a
+run only ends as `done` when this task is verified.
+
+`depends_on` is optional for other tasks. A task runs once all its dependencies are verified
 or needs-human; it then receives their outputs and statuses.
 
 Rules:

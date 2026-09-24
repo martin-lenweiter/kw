@@ -80,6 +80,7 @@ def apply(state, ev):
                 "goal": spec["goal"],
                 "done_when": spec["done_when"],
                 "depends_on": spec.get("depends_on", []),
+                "acceptance": bool(spec.get("acceptance")),
                 "status": "todo",
                 "attempts": 0,
                 "owner": None,
@@ -339,6 +340,23 @@ def cmd_tasks_set(args):
 
     for tid in deps:
         visit(tid)
+
+    # Exactly one acceptance task checks the whole result against the brief, so
+    # it must (transitively) depend on every other task.
+    accept = [s["id"] for s in specs if s.get("acceptance")]
+    if len(accept) != 1:
+        raise KwError("plan needs exactly one task with \"acceptance\": true")
+
+    def upstream(tid, acc):
+        for d in deps[tid]:
+            if d not in acc:
+                acc.add(d)
+                upstream(d, acc)
+        return acc
+
+    missing = set(deps) - {accept[0]} - upstream(accept[0], set())
+    if missing:
+        raise KwError(f"acceptance task {accept[0]} must depend on: {', '.join(sorted(missing))}")
     run = Run(args.run)
     with run.locked():
         state = run.load()
@@ -456,7 +474,9 @@ def cmd_finish(args):
                         "repairs": [r for r in repairs if state["tasks"][r]["status"] == "todo"],
                         "ready": [t["id"] for t in state["tasks"].values()
                                   if t["status"] == "todo" and ready(state, t)]}
-        final = "done" if counts(state)["needs-human"] == 0 else "partial"
+        accept = [t for t in state["tasks"].values() if t.get("acceptance")]
+        accepted = all(t["status"] == "verified" for t in accept)
+        final = "done" if counts(state)["needs-human"] == 0 and accepted else "partial"
         run.append(state, {"type": "phase", "from": "verifying", "to": final})
     return {"phase": final, "counts": counts(state)}
 
