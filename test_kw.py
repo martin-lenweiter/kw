@@ -244,6 +244,36 @@ class KwTest(unittest.TestCase):
         code, _ = run_kw("tasks", "set", self.run_dir, self.write("t.json", tasks), check=False)
         self.assertEqual(code, 2)
 
+    def test_resource_capacity_and_parallel_limit(self):
+        run_kw("init", self.run_dir, "--resource", "web-search=2", "--resource", "clay=1", "--max-parallel", "3")
+        run_kw("phase", self.run_dir, "planning")
+        tasks = [{"id": f"r{i}", "goal": "g", "done_when": "x", "uses": ["web-search"], "model": "fast"} for i in range(3)]
+        tasks += [{"id": "p1", "goal": "g", "done_when": "x", "uses": ["clay"]},
+                  {"id": "p2", "goal": "g", "done_when": "x", "uses": ["clay"]},
+                  {"id": "z", "goal": "g", "done_when": "x", "model": "strong", "acceptance": True,
+                   "depends_on": ["r0", "r1", "r2", "p1", "p2"]}]
+        run_kw("tasks", "set", self.run_dir, self.write("t.json", tasks))
+        run_kw("phase", self.run_dir, "awaiting-approval")
+        run_kw("approve", self.run_dir)
+        claimed = [run_kw("claim", self.run_dir, "--owner", "w")[1] for _ in range(4)]
+        self.assertEqual([c["claimed"] for c in claimed], ["r0", "r1", "p1", None])
+        self.assertEqual(claimed[0]["model"], "fast")
+        self.assertIn("max_parallel", claimed[3]["waiting_on_capacity"]["r2"])
+        run_kw("done", self.run_dir, "r0")
+        _, c = run_kw("claim", self.run_dir, "--owner", "w")
+        self.assertEqual(c["claimed"], "r2")  # web-search slot freed; p2 still waits for clay
+        run_kw("done", self.run_dir, "r1")
+        _, c = run_kw("claim", self.run_dir, "--owner", "w")
+        self.assertEqual(c["claimed"], None)
+        self.assertIn("clay", c["waiting_on_capacity"]["p2"])
+
+    def test_bad_model_tier_rejected(self):
+        run_kw("init", self.run_dir)
+        run_kw("phase", self.run_dir, "planning")
+        tasks = [{"id": "a", "goal": "g", "done_when": "d", "model": "genius", "acceptance": True}]
+        code, _ = run_kw("tasks", "set", self.run_dir, self.write("t.json", tasks), check=False)
+        self.assertEqual(code, 2)
+
 
 if __name__ == "__main__":
     unittest.main()

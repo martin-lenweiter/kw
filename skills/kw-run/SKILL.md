@@ -31,6 +31,19 @@ When `claim` returns null and `kw status` shows no running tasks:
 `kw phase <run> verifying` and hand over to kw-verify. Tasks waiting on
 dependencies become runnable after the verify round that settles them.
 
+## Models and capacity
+
+`claim` returns the task's `model` tier and `uses`. Map the tier to your
+harness: for example in Claude Code `fast` = Haiku, `standard` = Sonnet,
+`strong` = Opus; in Codex use the matching reasoning level. `claim` holds a
+task back while its resources are at capacity (`waiting_on_capacity`); claim
+again when a running task finishes.
+
+Capacity limits concurrency, not quotas. If a shared quota runs out (for
+example the harness's web-search budget), do not let workers mark work as
+unavailable: pause those tasks or start them on another harness
+(`codex exec`, `claude -p`) with its own quota.
+
 ## Rules
 
 - Follow the frozen plan. If a task cannot be done as specified, finish it with

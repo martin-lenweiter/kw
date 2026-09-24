@@ -42,7 +42,22 @@ acceptance criteria applied to the whole result: outputs integrate, totals
 agree, and every brief requirement is met. kw rejects a plan without it, and a
 run only ends as `done` when this task is verified.
 
-`depends_on` is optional for other tasks. A task runs once all its dependencies are verified
+`depends_on` is optional for other tasks.
+
+Per task, also set:
+
+- `model`: `fast` (mechanical work), `standard` (bounded research and
+  verification; the default) or `strong` (judgment-heavy work such as
+  critique, synthesis or acceptance).
+- `uses`: the shared surfaces the task needs, for example `web-search`,
+  `chrome`, `clay`, `attio-write`.
+
+Declare each surface's capacity when you init the run, so the plan shows the
+parallelism the user approves: read-only surfaces get high capacity (for
+example `--resource web-search=8 --resource chrome=4`, one tab per worker);
+paid calls and writes get 1 (`--resource clay=1`). Add `--max-parallel N` to
+cap concurrent tasks overall. Name any known quota (for example a search-call
+limit per session) in plan.md, with the fallback if it runs out. A task runs once all its dependencies are verified
 or needs-human; it then receives their outputs and statuses.
 
 Rules:

@@ -20,7 +20,8 @@ LEDGER = "ledger.jsonl"
 STATE = "state.json"
 LOCK = ".lock"
 
-DEFAULTS = {"max_repairs": 2, "max_rounds": 3, "lease_seconds": 1800}
+DEFAULTS = {"max_repairs": 2, "max_rounds": 3, "lease_seconds": 1800, "max_parallel": 0}
+MODEL_TIERS = {"fast", "standard", "strong"}
 
 # Run phases and the phases each one may move to.
 PHASES = {
@@ -66,6 +67,7 @@ def apply(state, ev):
     if t == "init":
         state["phase"] = "clarifying"
         state["config"].update(ev.get("config", {}))
+        state["config"].setdefault("resources", {})
         state["title"] = ev.get("title", "")
     elif t == "phase":
         state["phase"] = ev["to"]
@@ -81,6 +83,8 @@ def apply(state, ev):
                 "done_when": spec["done_when"],
                 "depends_on": spec.get("depends_on", []),
                 "acceptance": bool(spec.get("acceptance")),
+                "uses": spec.get("uses", []),
+                "model": spec.get("model", "standard"),
                 "status": "todo",
                 "attempts": 0,
                 "owner": None,
@@ -219,6 +223,24 @@ def blocked_todo(state):
     return [t["id"] for t in state["tasks"].values() if t["status"] == "todo" and not ready(state, t)]
 
 
+def capacity_block(state, task):
+    """Name of a resource or limit that stops this task from starting now, else None.
+
+    Resources are declared per run with a capacity (how many running tasks may
+    use them at once). Read-only surfaces get high capacity; paid calls and
+    writes get 1. Undeclared resources are unlimited.
+    """
+    running = [t for t in state["tasks"].values() if t["status"] == "running"]
+    limit = state["config"].get("max_parallel") or 0
+    if limit and len(running) >= limit:
+        return f"max_parallel {limit}"
+    caps = state["config"].get("resources", {})
+    for r in task.get("uses", []):
+        if r in caps and sum(r in t.get("uses", []) for t in running) >= caps[r]:
+            return f"resource {r} at capacity {caps[r]}"
+    return None
+
+
 def next_action(state):
     """One-line instruction for whichever agent reads the run next."""
     p = state["phase"]
@@ -263,6 +285,13 @@ def cmd_init(args):
     elif not (d / "brief.md").exists():
         (d / "brief.md").write_text("# Brief\n\nGoal:\n\nInputs:\n\nOutput:\n\nAcceptance criteria:\n")
     config = {k: getattr(args, k) for k in DEFAULTS if getattr(args, k) is not None}
+    resources = {}
+    for item in args.resource or []:
+        name, _, cap = item.partition("=")
+        if not name or not cap.isdigit() or int(cap) < 1:
+            raise KwError(f"--resource needs name=capacity (capacity >= 1): {item}")
+        resources[name] = int(cap)
+    config["resources"] = resources
     run = Run(d)
     with run.locked():
         run.append(empty_state(), {"type": "init", "title": args.title or d.name, "config": config})
@@ -319,6 +348,8 @@ def cmd_tasks_set(args):
                 raise KwError(f"task missing {key}: {s}")
         if s["id"] in seen:
             raise KwError(f"duplicate task id {s['id']}")
+        if s.get("model", "standard") not in MODEL_TIERS:
+            raise KwError(f"task {s['id']} model must be one of {', '.join(sorted(MODEL_TIERS))}")
         seen.add(s["id"])
     for s in specs:
         for d in s.get("depends_on", []):
@@ -383,18 +414,25 @@ def cmd_claim(args):
         require_phase(state, "executing")
         expire_leases(run, state)
         candidates = [args.id] if args.id else state["order"]
+        held = {}
         for tid in candidates:
             task = get_task(state, tid)
             if task["status"] == "todo" and ready(state, task):
+                block = capacity_block(state, task)
+                if block:
+                    held[tid] = block
+                    continue
                 lease = args.lease or state["config"]["lease_seconds"]
                 run.append(state, {"type": "claim", "id": tid, "owner": args.owner,
                                    "lease_until": now() + lease})
                 return {"claimed": tid, "goal": task["goal"], "done_when": task["done_when"],
+                        "model": task.get("model", "standard"), "uses": task.get("uses", []),
                         "attempts": task["attempts"], "last_findings": task["last_findings"],
                         "dependencies": {d: {"status": state["tasks"][d]["status"],
                                              "output": state["tasks"][d]["output"]}
                                          for d in task["depends_on"]}}
-        return {"claimed": None, "waiting_on_dependencies": blocked_todo(state)}
+        return {"claimed": None, "waiting_on_dependencies": blocked_todo(state),
+                "waiting_on_capacity": held}
 
 
 def cmd_done(args):
@@ -515,6 +553,8 @@ def main(argv=None):
     s.add_argument("--title")
     for k in DEFAULTS:
         s.add_argument(f"--{k.replace('_', '-')}", dest=k, type=int)
+    s.add_argument("--resource", action="append",
+                   help="name=capacity, e.g. web-search=8 chrome=4 clay=1 (repeatable)")
     s.set_defaults(fn=cmd_init)
 
     s = sub.add_parser("status", help="phase, task counts and next action")

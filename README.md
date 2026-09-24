@@ -39,6 +39,15 @@ A task may list `depends_on`. It becomes claimable once every dependency is
 `verified` or `needs-human`, and its claim includes their outputs. A stage
 that only waits for dependencies does not use a repair round.
 
+## Models and parallel resources
+
+Each task may name a `model` tier (`fast`, `standard`, `strong`; the
+orchestrator maps it to the harness's models) and the shared surfaces it
+`uses`. `kw init --resource web-search=8 --resource chrome=4 --resource clay=1
+--max-parallel 10` declares how many running tasks may use each surface at
+once. Read-only surfaces get high capacity; paid calls and writes get 1.
+Undeclared resources are unlimited.
+
 ## Acceptance task
 
 Each task is verified on its own. To check the whole result against the brief,
