@@ -51,6 +51,16 @@ class KwTest(unittest.TestCase):
         run_kw("phase", self.run_dir, "awaiting-approval")
         run_kw("approve", self.run_dir)
 
+    def test_graph_layers_tasks_and_marks_phase(self):
+        self.to_executing(n=3)
+        run_kw("claim", self.run_dir, "--owner", "w1", "--id", "t1")
+        p = subprocess.run(KW + ["graph", str(self.run_dir)], capture_output=True, text=True, check=True)
+        lines = p.stdout.splitlines()
+        self.assertIn("[executing]", p.stdout)
+        self.assertTrue(any(l.startswith("L0  [>] t1") and "w1" in l for l in lines))
+        self.assertTrue(any(l.startswith("    [ ] t2") for l in lines))
+        self.assertTrue(any(l.startswith("L1  [.] t3") and "<- t1, t2" in l for l in lines))
+
     def complete(self, tid):
         task = kw.status_of(self.run_dir)["tasks"][tid]
         out = Path("out") / tid / task["token"] / "result.md"

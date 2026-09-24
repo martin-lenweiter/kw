@@ -75,6 +75,7 @@ It requires an installed, authenticated Claude Code or Codex CLI.
 kw init runs/partner-research --brief brief.md --max-parallel 4
 kw loop runs/partner-research --harness claude
 kw status runs/partner-research
+kw graph runs/partner-research   # task graph by dependency level, with the current phase
 ```
 
 Use `--harness codex` for Codex. The loop pauses for answers or plan approval.

@@ -437,6 +437,67 @@ def cmd_status(args):
     }
 
 
+PIPELINE = ["clarifying", "planning", "approval", "executing", "verifying", "done"]
+PIPELINE_SLOT = {"awaiting-answers": "clarifying", "awaiting-approval": "approval", "partial": "done"}
+MARKS = [("x", "verified"), ("~", "done, awaiting verification"), (">", "running"),
+         (" ", "ready"), (".", "waiting on dependencies"), ("!", "needs human")]
+
+
+def render_graph(state, width=60):
+    """Plain-text task graph, layered by dependency depth, showing where the run is."""
+    phase = state["phase"]
+    slot = PIPELINE_SLOT.get(phase, phase)
+    stages = [f"[{phase}]" if s == slot else s for s in PIPELINE]
+    tasks = state["tasks"]
+    depth = {}
+
+    def level(tid):
+        if tid not in depth:
+            depth[tid] = 1 + max((level(d) for d in tasks[tid]["depends_on"]), default=-1)
+        return depth[tid]
+
+    def mark(task):
+        s = task["status"]
+        if s == "todo":
+            return " " if ready(state, task) else "."
+        return {"verified": "x", "done": "~", "running": ">", "needs-human": "!"}[s]
+
+    c = counts(state)
+    summary = [f"{c['verified']}/{len(tasks)} verified"]
+    summary += [f"{c[s]} {label}" for s, label in (("running", "running"), ("done", "awaiting verification"),
+                                                   ("needs-human", "need human")) if c[s]]
+    lines = [f"{state.get('title') or 'KW run'} · round {state['round']}", "",
+             " > ".join(stages), ""]
+    if tasks:
+        lines += [" · ".join(summary), ""]
+    idw = max((len(t) for t in tasks), default=0)
+    goalw = min(width, max((len(t["goal"]) for t in tasks.values()), default=0))
+    for lv in sorted({level(t) for t in state["order"]}):
+        for n, tid in enumerate(t for t in state["order"] if level(t) == lv):
+            task = tasks[tid]
+            goal = task["goal"] if len(task["goal"]) <= width else task["goal"][:width - 1] + "…"
+            row = f"{f'L{lv}' if n == 0 else '':<4}[{mark(task)}] {tid:<{idw}}  {goal:<{goalw}}"
+            extras = []
+            if task["acceptance"]:
+                extras.append("acceptance")
+            if task.get("owner"):
+                extras.append(task["owner"])
+            if task["depends_on"]:
+                extras.append("<- " + ", ".join(task["depends_on"]))
+            lines.append(row + (f"  ({'; '.join(extras)})" if extras else ""))
+    if tasks:
+        lines += ["", "  ".join(f"[{m}] {label}" for m, label in MARKS)]
+    lines += ["", f"Next: {next_action(state)}"]
+    return "\n".join(lines)
+
+
+def cmd_graph(args):
+    run = Run(args.run)
+    with run.locked():
+        state = run.load()
+    return render_graph(state)
+
+
 def cmd_phase(args):
     run = Run(args.run)
     with run.locked():
@@ -1013,6 +1074,10 @@ def build_parser():
     s.add_argument("run")
     s.set_defaults(fn=cmd_status)
 
+    s = sub.add_parser("graph", help="draw the task graph and show where the run is")
+    s.add_argument("run")
+    s.set_defaults(fn=cmd_graph)
+
     s = sub.add_parser("phase", help="move the run to another phase")
     s.add_argument("run")
     s.add_argument("to", choices=sorted(PHASES))
@@ -1104,7 +1169,7 @@ def main(argv=None):
     except KwError as e:
         print(json.dumps({"error": str(e)}), file=sys.stderr)
         return 2
-    print(json.dumps(result, indent=2, ensure_ascii=False))
+    print(result if isinstance(result, str) else json.dumps(result, indent=2, ensure_ascii=False))
     return 0
 
 
