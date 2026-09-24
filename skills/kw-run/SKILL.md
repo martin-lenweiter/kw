@@ -49,5 +49,9 @@ unavailable: pause those tasks or start them on another harness
 - Follow the frozen plan. If a task cannot be done as specified, finish it with
   what is possible and state the gap in the output; the verifier decides.
 - Never change `done_when` or add tasks.
+- When the user decides something during execution (a selection, an
+  ordering, extra spend), record it at once in `<run>/decisions.md`: the task,
+  the decision, the user's words and the date. Verifiers only see files, so a
+  decision that lives only in chat will be judged as a violation.
 - A crash loses at most the in-flight tasks; their leases expire and they
   return to todo without counting as a repair attempt.

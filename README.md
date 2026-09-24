@@ -19,7 +19,7 @@ own.
 ## Run directory
 
 ```
-<run>/brief.md  questions.md  plan.md  tasks.json  critique.md
+<run>/brief.md  questions.md  plan.md  tasks.json  critique.md  decisions.md
 <run>/ledger.jsonl   append-only event log (source of truth)
 <run>/state.json     snapshot, rebuilt from the ledger when missing or stale
 <run>/out/           task outputs

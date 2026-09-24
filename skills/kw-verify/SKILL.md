@@ -6,7 +6,8 @@ description: Gate 3 of a kw run. Independently verify each executed task against
 # kw verify (gate 3)
 
 Work in a fresh context. Read only `brief.md`, the answers in `questions.md`,
-`tasks.json` and the outputs. Do not read the executors' conversations.
+`decisions.md` (user decisions made during execution; they count as frozen
+scope for the tasks they name), `tasks.json` and the outputs. Do not read the executors' conversations.
 
 For each task with status `done` (`kw status <run>`):
 
