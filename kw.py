@@ -475,11 +475,11 @@ def render_graph(state, width=60):
             extras = []
             if task["acceptance"]:
                 extras.append("acceptance")
-            if task.get("owner"):
+            if task["status"] == "running" and task.get("owner"):
                 extras.append(task["owner"])
             if task["depends_on"]:
                 extras.append("<- " + ", ".join(task["depends_on"]))
-            lines.append(row + (f"  ({'; '.join(extras)})" if extras else ""))
+            lines.append((row + (f"  ({'; '.join(extras)})" if extras else "")).rstrip())
     if tasks:
         lines += ["", "  ".join(f"[{m}] {label}" for m, label in MARKS)]
     lines += ["", f"Next: {next_action(state)}"]
@@ -503,7 +503,7 @@ def render_tree(state, width=60):
         task = tasks[tid]
         goal = task["goal"] if len(task["goal"]) <= width else task["goal"][:width - 1] + "…"
         branch = "" if top else ("`-- " if last else "|-- ")
-        owner = f"  ({task['owner']})" if task.get("owner") else ""
+        owner = f"  ({task['owner']})" if task["status"] == "running" and task.get("owner") else ""
         again = tid in seen and task["depends_on"]
         lines.append(f"{prefix}{branch}[{task_mark(state, task)}] {tid}  {goal}{owner}" + ("  (see above)" if again else ""))
         if again:
@@ -540,7 +540,7 @@ def render_mermaid(state):
     for tid in state["order"]:
         task = state["tasks"][tid]
         label = f"{tid}<br/>{task['goal']}".replace('"', "'")
-        if task.get("owner"):
+        if task["status"] == "running" and task.get("owner"):
             label += f"<br/><i>{task['owner']}</i>"
         shape = ('{{"%s"}}' if task["acceptance"] else '["%s"]') % label
         lines.append(f"  {node[tid]}{shape}:::{graph_status(state, task).replace('-', '_')}")
@@ -560,7 +560,7 @@ def render_dot(state):
     for tid in state["order"]:
         task = state["tasks"][tid]
         status = graph_status(state, task)
-        label = "\\n".join(esc(x) for x in (tid, *textwrap.wrap(task["goal"], 40), task.get("owner")) if x)
+        label = "\\n".join(esc(x) for x in (tid, *textwrap.wrap(task["goal"], 40), task["owner"] if task["status"] == "running" else None) if x)
         extra = ", peripheries=2" if task["acceptance"] else ""
         lines.append(f'  "{tid}" [label="{label}", fillcolor="{STATUS_COLOURS[status]}", tooltip="{status}"{extra}];')
     for tid in state["order"]:
