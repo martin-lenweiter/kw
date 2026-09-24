@@ -1,94 +1,72 @@
 ---
 name: kw-plan
-description: Gate 1 of a kw run. Clarify a brief with the user, draft a task plan with testable done_when criteria, get it critiqued in a fresh context, and hand it to the user for approval. Use when starting a kw run or when a run is in phase clarifying, awaiting-answers, planning or awaiting-approval.
+description: Plan a new kw run or continue one in clarifying, awaiting-answers, planning, or awaiting-approval. Define outcomes and assignments, obtain an independent critique, and request user approval.
 ---
 
-# kw plan (gate 1)
+# Plan
 
-A run is a directory. Change state only with the `kw` command; never edit
-`state.json` or `ledger.jsonl`. Run `kw status <run>` first and follow `next`.
+KW adds shared state around planning, implementation, and verification. Give
+capable agents clear outcomes and room to choose methods. Use `kw` for state
+changes, never edit `state.json` or `ledger.jsonl`.
 
-## 1. Start
+Start with `kw status <run>` and follow `next`. For new work, use
+`kw init <run> --brief <file>`.
 
-- New work: `kw init <run> --brief <file>` or write `<run>/brief.md` after init.
-- Existing run: `kw status <run>`.
+## Clarify the outcome
 
-## 2. Clarify (phase `clarifying`)
+Read the brief and its relevant inputs. Ask only about missing information that
+materially changes the result or authority: scope, deliverables, sources, costs,
+and external writes. Record questions and answers in `questions.md`. If an
+answer is required, run `kw phase <run> awaiting-answers` and wait. Once the
+brief is clear, run `kw phase <run> planning`.
 
-Read `brief.md` and any files it names. List what would change the result if
-guessed wrong: scope, inputs, output format, sources allowed, costs or credits,
-write permissions, and what counts as done.
+## Make coherent assignments
 
-- If anything is open, write numbered questions with a recommended default
-  each to `<run>/questions.md`, run `kw phase <run> awaiting-answers`, and ask
-  the user. Stop until answered.
-- When answers arrive, append them under each question, then
-  `kw phase <run> planning`.
-- Ask only questions whose answer changes the plan.
-
-## 3. Plan (phase `planning`)
-
-Write `<run>/plan.md` (approach, inputs, method, costs, risks) and
-`<run>/tasks.json`:
+Write `plan.md` with the approach, constraints, agent allocation, verification
+approach, and material costs or risks. Write `tasks.json`, for example:
 
 ```json
-[{"id": "t01", "goal": "…", "done_when": "checkable condition", "inputs": "…"},
- {"id": "t02", "goal": "…", "done_when": "…", "depends_on": ["t01"]}]
+[
+  {"id": "research", "goal": "Find candidate partners", "done_when": "Each candidate has a source and a reason for inclusion", "inputs": "brief.md"},
+  {"id": "deliver", "goal": "Produce the combined recommendation", "done_when": "The deliverable meets the brief and accounts for research findings", "depends_on": ["research"], "acceptance": true}
+]
 ```
 
-Exactly one task must have `"acceptance": true`. It depends (directly or
-through other tasks) on every other task, and its `done_when` is the brief's
-acceptance criteria applied to the whole result: outputs integrate, totals
-agree, and every brief requirement is met. kw rejects a plan without it, and a
-run only ends as `done` when this task is verified.
+- Assign complete outcomes. Split work when independence, ownership, or useful
+  parallelism justifies it. Avoid prescribed thinking steps.
+- Make `done_when` checkable against outputs and sources by an independent
+  reviewer. Choose output formats that serve the task.
+- Exactly one `acceptance` task must depend, directly or indirectly, on every
+  other task. It produces the combined deliverable; its criteria cover the
+  original brief. It is still implementation, not self-verification.
+- Default to one global independent verification after implementation. For
+  genuinely large work or a consequential dependency, set `checkpoint: true`
+  on the relevant task and explain why. Its consumers wait for verification;
+  ordinary consumers can start when their inputs are completed.
+- Optional `model` names an actual model ID; `effort` is separate. Otherwise use
+  runtime defaults. Choose for the task, without fixed model tiers.
+- Declare shared surfaces in `uses` only where useful. Set capacities with
+  `kw init --resource <name>=<limit>` and overall `--max-parallel`. Respect
+  permissions and quotas; changing runtimes does not authorize bypassing them.
 
-`depends_on` is optional for other tasks.
+Load the tasks with `kw tasks set <run> <run>/tasks.json`.
 
-Per task, also set:
+## Critique and approval
 
-- `model`: `fast` (mechanical work), `standard` (bounded research and
-  verification; the default) or `strong` (judgment-heavy work such as
-  critique, synthesis or acceptance).
-- `uses`: the shared surfaces the task needs, for example `web-search`,
-  `chrome`, `clay`, `attio-write`.
+Ask a fresh agent to critique coverage, unnecessary scope, acceptance criteria,
+and decomposition using the brief, answers, plan, and tasks. Save its findings
+in `critique.md` and resolve material blockers before approval.
 
-Declare each surface's capacity when you init the run, so the plan shows the
-parallelism the user approves: read-only surfaces get high capacity (for
-example `--resource web-search=8 --resource chrome=4`, one tab per worker);
-paid calls and writes get 1 (`--resource clay=1`). Add `--max-parallel N` to
-cap concurrent tasks overall. Name any known quota (for example a search-call
-limit per session) in plan.md, with the fallback if it runs out. A task runs once all its dependencies are verified
-or needs-human; it then receives their outputs and statuses.
+Record in `plan.md` and show the user:
 
-Rules:
-- Each task is independent enough to run in its own subagent.
-- `done_when` must be checkable from the output alone by someone who did not do
-  the work. Bad: "good coverage". Good: "each row has phone in E.164 with a
-  source URL, or status not_found with the sources tried".
-- Size tasks so one attempt fits in one agent session.
+- Deliverables, task groups, and the global verification or checkpoint approach.
+- Whether execution uses subagents, separate processes, or the current agent.
+  Identify delegated tasks and the orchestrator's work; “in parallel” alone is
+  insufficient.
+- Agent roles, runtime, concrete model, effort where configurable, and maximum
+  concurrency. Resolve runtime defaults where possible and label unknowns.
+- Costs, permissions, material risks, and the critique outcome.
 
-Load with `kw tasks set <run> <run>/tasks.json`.
-
-## 4. Critique
-
-Spawn a fresh agent (subagent, or `claude -p` / `codex exec`) with only
-`brief.md`, the answers, `plan.md` and `tasks.json`. Ask it to report in
-`<run>/critique.md`: brief items not covered, scope added beyond the brief,
-`done_when` that cannot be checked, overlapping or oversized tasks. Revise once
-if it finds blocking issues, and note what changed.
-
-## 5. Approval
-
-Before asking for approval, record in plan.md and show the user the worker
-allocation: task groups, agent roles, runtime, concrete model and reasoning
-level where configurable, and maximum concurrent workers. Resolve task model
-tiers against the available runtime; mark any unresolved choice explicitly.
-Do not present tiers such as "standard" or "strong" as model identities.
-In the user-facing approval summary, explicitly state whether execution uses
-subagents, separate agent processes, or the current agent alone. Identify
-which tasks are delegated and which remain with the orchestrator.
-Saying "in parallel" does not satisfy this requirement.
-
-`kw phase <run> awaiting-approval`, then show the user a short summary: task
-count, approach, costs, critique outcome. Only the user approves:
-`kw approve <run>`. After approval the plan and `done_when` are frozen.
+Run `kw phase <run> awaiting-approval`. Only the user approves with
+`kw approve <run>`. Approval freezes task goals and `done_when`; implementation
+methods remain flexible within that scope.

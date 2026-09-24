@@ -1,49 +1,58 @@
 ---
 name: kw-verify
-description: Gate 3 of a kw run. Independently verify each executed task against its frozen done_when criteria, record pass or fail with keyed findings, and close the round so failures go back for bounded repair. Use when a kw run is in phase verifying.
+description: Independently verify a kw run's combined result, or a planned intermediate checkpoint, in phase verifying. Record task verdicts and focused findings, then close the round.
 ---
 
-# kw verify (gate 3)
+# Verify
 
-Work in a fresh context. Read only `brief.md`, the answers in `questions.md`,
-`decisions.md` (user decisions made during execution; they count as frozen
-scope for the tasks they name), `tasks.json` and the outputs. Do not read the executors' conversations.
+Work in a fresh context, independent of the executors' conversations. Read the
+brief, answers, recorded decisions, task definitions, and outputs. Use
+`kw status <run>` to identify completed tasks awaiting verdicts.
 
-For each task with status `done` (`kw status <run>`):
+Global verification is the default: one verifier examines the combined result
+and records verdicts for all pending tasks in the same context. At a planned
+checkpoint, assess the completed work needed to unblock implementation; do not
+claim the unfinished overall result has passed.
 
-1. Check the output against that task's `done_when`, and spot-check facts:
-   open cited sources, confirm values are present where claimed, check formats.
-2. Write findings to a JSON file:
+## Assess the actual outcome
+
+Check the combined deliverable against the original brief and recorded user
+decisions, then attribute defects to the affected task criteria. Check sources
+and substantive claims, not just whether files or table columns exist. Verify
+the actual destination when the task includes publication.
+
+Use mechanical checks for objective requirements where useful, and judgment
+for relevance and factual support. Match the depth of checking to consequence.
+On repair, check the findings and plausible regressions while preserving valid
+work; finish with acceptance of the whole result.
+
+Review inputs before their consumers and refresh `kw status` after each verdict.
+A failure invalidates downstream outputs; those tasks must run again before
+receiving verdicts.
+
+For each pending task, write findings when needed:
 
 ```json
-[{"key": "phone-without-source", "severity": "blocking", "text": "rows r12, r19: phone has no source URL"}]
+[{"key": "missing-source", "severity": "blocking", "text": "Candidates A and B lack the sources required by done_when."}]
 ```
 
-   - `blocking`: `done_when` is not met. Only these send the task back.
-   - `note`: improvements outside `done_when`. They go to the report.
-   - `key`: a short stable slug for the problem. Reuse the same key if the same
-     problem is still there after a repair; kw uses it to detect stalls.
-3. `kw verdict <run> <id> pass [--findings f.json]` or
-   `kw verdict <run> <id> fail --findings f.json`.
+- `blocking` means an agreed requirement is unmet. Do not downgrade a real
+  failure or add new requirements.
+- `note` is an improvement outside the acceptance criteria.
+- Reuse the stable `key` when a defect persists, so repeated failures are visible.
 
-You judge only against the frozen `done_when`. Do not add requirements.
+Record each verdict with:
 
-- Check every row or item against every clause that can be checked
-  mechanically, by script, not by reading a sample. Spot-check facts on a
-  sample.
-- Any violation of a `done_when` clause is `blocking`, however small. Do not
-  downgrade it to a note.
-- On a repair round, read the previous findings first and reuse the same `key`
-  for a problem that is still present. Write the new findings to a new file.
-- Work that is described but was not actually done (for example, "search
-  unavailable") does not satisfy a clause.
+```sh
+kw verdict <run> <id> pass
+kw verdict <run> <id> fail --findings <file>
+```
 
-When every task has a verdict: `kw finish <run>`. It sends failed tasks back
-for repair, or ends the run as `done` or `partial`. Tasks stop as
-`needs-human` when the same blocking finding repeats, the per-task repair cap
-is reached, or the run round cap is reached.
+A pass can also include `--findings <file>` for notes. Record evidence against
+the current output, not a superseded attempt.
 
-## Report
-
-When the run ends, write `<run>/report.md`: result summary, verified outputs,
-`needs-human` tasks with their findings and what was tried, and notes.
+When every pending task has a verdict, run `kw finish <run>`. It returns focused
+failures for bounded repair, continues implementation after checkpoints, or
+ends the run as `done` or `partial`. Check the returned state. The final report
+must truthfully identify outputs, verification results, and unresolved work;
+add useful substantive synthesis without changing that status.

@@ -24,20 +24,29 @@ if "kw planner" in prompt:
     print("planned")
 elif "kw worker for task" in prompt:
     tid = re.search(r"kw worker for task (\S+)", prompt).group(1)
-    out = run / "out" / f"{tid}.md"
+    state = json.loads((run / "state.json").read_text())
+    out = run / state["tasks"][tid]["output_dir"] / "result.md"
+    out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("ok")
     (run / "out" / f"{tid}.calls").open("a").write(sys.argv[-2] + "\n")  # records model used
-    print(f"KW_OUTPUT: out/{tid}.md")
-elif "kw verifier for task" in prompt:
-    tid = re.search(r"verifier for task (\S+)", prompt).group(1)
-    marker = run / "out" / f"{tid}.failed-once"
-    f = run / "verify" / f"{tid}.json"
-    f.parent.mkdir(exist_ok=True)
-    if tid == "t1" and not marker.exists():
-        marker.write_text("x")
-        f.write_text(json.dumps([{"key": "k1", "severity": "blocking", "text": "redo"}]))
-        kw("verdict", str(run), tid, "fail", "--findings", str(f))
-    else:
-        f.write_text("[]")
-        kw("verdict", str(run), tid, "pass", "--findings", str(f))
+    print(f"KW_OUTPUT: {out.relative_to(run)}")
+elif "kw verifier" in prompt:
+    (run / "out" / "verifier.calls").open("a").write("stage\n")
+    # Refresh after each verdict: failing an input invalidates completed consumers.
+    while True:
+        state = json.loads((run / "state.json").read_text())
+        pending = [tid for tid in state["order"] if state["tasks"][tid]["status"] == "done"]
+        if not pending:
+            break
+        tid = pending[0]
+        marker = run / "out" / f"{tid}.failed-once"
+        f = run / "verify" / f"{tid}.json"
+        f.parent.mkdir(exist_ok=True)
+        if tid == "t1" and not marker.exists():
+            marker.write_text("x")
+            f.write_text(json.dumps([{"key": "k1", "severity": "blocking", "text": "redo"}]))
+            kw("verdict", str(run), tid, "fail", "--findings", str(f))
+        else:
+            f.write_text("[]")
+            kw("verdict", str(run), tid, "pass", "--findings", str(f))
     print("verified")

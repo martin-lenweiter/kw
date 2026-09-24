@@ -5,6 +5,7 @@ import sys
 import tempfile
 import time
 import unittest
+from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -37,6 +38,7 @@ class KwTest(unittest.TestCase):
         return path
 
     def to_executing(self, n=2, **init):
+        init.setdefault("verification", "per-task")
         flags = []
         for k, v in init.items():
             flags += [f"--{k.replace('_', '-')}", v]
@@ -49,14 +51,19 @@ class KwTest(unittest.TestCase):
         run_kw("phase", self.run_dir, "awaiting-approval")
         run_kw("approve", self.run_dir)
 
+    def complete(self, tid):
+        task = kw.status_of(self.run_dir)["tasks"][tid]
+        out = Path("out") / tid / task["token"] / "result.md"
+        (self.run_dir / out).parent.mkdir(parents=True, exist_ok=True)
+        (self.run_dir / out).write_text("result")
+        return run_kw("done", self.run_dir, tid, "--token", task["token"], "--output", str(out))
+
     def execute_all(self):
         while True:
             _, r = run_kw("claim", self.run_dir, "--owner", "w")
             if not r["claimed"]:
                 break
-            out = self.run_dir / "out" / f"{r['claimed']}.md"
-            out.write_text("result")
-            run_kw("done", self.run_dir, r["claimed"], "--output", f"out/{r['claimed']}.md")
+            self.complete(r["claimed"])
         run_kw("phase", self.run_dir, "verifying")
 
     def findings(self, *keys):
@@ -114,7 +121,7 @@ class KwTest(unittest.TestCase):
         self.assertEqual(r["phase"], "executing")
         _, c = run_kw("claim", self.run_dir, "--owner", "w")
         self.assertEqual(c["last_findings"][0]["key"], "a")
-        run_kw("done", self.run_dir, "t1")
+        self.complete("t1")
         run_kw("phase", self.run_dir, "verifying")
         run_kw("verdict", self.run_dir, "t1", "pass")
         _, r = run_kw("finish", self.run_dir)
@@ -163,14 +170,14 @@ class KwTest(unittest.TestCase):
         code, _ = run_kw("verdict", self.run_dir, "t1", "fail", "--findings", notes, check=False)
         self.assertEqual(code, 2)
 
-    def test_crash_recovery_releases_expired_lease_without_attempt(self):
+    def test_expired_worker_requires_recovery_without_quality_attempt(self):
         self.to_executing(n=2)
         run_kw("claim", self.run_dir, "--owner", "w1", "--lease", "1")
         time.sleep(1.2)
         _, r = run_kw("resume", self.run_dir)
         self.assertEqual(r["released"], ["t1"])
         _, s = run_kw("status", self.run_dir)
-        self.assertEqual(s["tasks"][0]["status"], "todo")
+        self.assertEqual(s["tasks"][0]["status"], "needs-human")
         self.assertEqual(s["tasks"][0]["attempts"], 0)
 
     def test_snapshot_loss_and_torn_ledger_line(self):
@@ -179,9 +186,9 @@ class KwTest(unittest.TestCase):
         (self.run_dir / "state.json").unlink()
         with open(self.run_dir / "ledger.jsonl", "a") as fh:
             fh.write('{"type": "done", "id"')  # crash mid-append
-        _, s = run_kw("status", self.run_dir)
-        self.assertEqual(s["counts"]["running"], 1)
-        self.assertEqual(s["counts"]["todo"], 1)
+        code, s = run_kw("status", self.run_dir, check=False)
+        self.assertEqual(code, 2)
+        self.assertIn("ledger", s["error"].lower())
 
     def test_parallel_claims_never_duplicate(self):
         self.to_executing(n=9)  # t9 is the acceptance task and waits
@@ -195,7 +202,7 @@ class KwTest(unittest.TestCase):
         self.assertEqual(code, 2)
 
     def staged(self, max_rounds=3, max_repairs=2):
-        run_kw("init", self.run_dir, "--max-rounds", max_rounds, "--max-repairs", max_repairs)
+        run_kw("init", self.run_dir, "--verification", "per-task", "--max-rounds", max_rounds, "--max-repairs", max_repairs)
         run_kw("phase", self.run_dir, "planning")
         tasks = [{"id": "r1", "goal": "g", "done_when": "x"},
                  {"id": "r2", "goal": "g", "done_when": "x"},
@@ -262,24 +269,24 @@ class KwTest(unittest.TestCase):
         self.assertEqual([c["claimed"] for c in claimed], ["r0", "r1", "p1", None])
         self.assertEqual(claimed[0]["model"], "fast")
         self.assertIn("max_parallel", claimed[3]["waiting_on_capacity"]["r2"])
-        run_kw("done", self.run_dir, "r0")
+        self.complete("r0")
         _, c = run_kw("claim", self.run_dir, "--owner", "w")
         self.assertEqual(c["claimed"], "r2")  # web-search slot freed; p2 still waits for clay
-        run_kw("done", self.run_dir, "r1")
+        self.complete("r1")
         _, c = run_kw("claim", self.run_dir, "--owner", "w")
         self.assertEqual(c["claimed"], None)
         self.assertIn("clay", c["waiting_on_capacity"]["p2"])
 
-    def test_bad_model_tier_rejected(self):
+    def test_invalid_model_rejected(self):
         run_kw("init", self.run_dir)
         run_kw("phase", self.run_dir, "planning")
-        tasks = [{"id": "a", "goal": "g", "done_when": "d", "model": "genius", "acceptance": True}]
+        tasks = [{"id": "a", "goal": "g", "done_when": "d", "model": [], "acceptance": True}]
         code, _ = run_kw("tasks", "set", self.run_dir, self.write("t.json", tasks), check=False)
         self.assertEqual(code, 2)
 
     def test_first_failure_in_last_round_still_gets_a_repair(self):
         # a1 fails in round 1 and uses round 2; a2 depends on a1 and first fails in round 2 (the cap)
-        run_kw("init", self.run_dir, "--max-rounds", "2")
+        run_kw("init", self.run_dir, "--verification", "per-task", "--max-rounds", "2")
         run_kw("phase", self.run_dir, "planning")
         tasks = [{"id": "a1", "goal": "g", "done_when": "x"},
                  {"id": "a2", "goal": "g", "done_when": "x", "depends_on": ["a1"], "acceptance": True}]
@@ -312,6 +319,137 @@ class KwTest(unittest.TestCase):
         _, r = run_kw("finish", self.run_dir)
         self.assertEqual(r["phase"], "done")
 
+    def global_plan(self, checkpoint=False, partial=False, max_repairs=2):
+        run_kw("init", self.run_dir, "--max-repairs", max_repairs)
+        run_kw("phase", self.run_dir, "planning")
+        tasks = [{"id": "source", "goal": "research", "done_when": "supported", "checkpoint": checkpoint},
+                 {"id": "result", "goal": "integrate", "done_when": "goal met", "acceptance": True,
+                  "depends_on": ["source"], "allow_partial_inputs": partial}]
+        run_kw("tasks", "set", self.run_dir, self.write("tasks.json", tasks))
+        run_kw("phase", self.run_dir, "awaiting-approval")
+        run_kw("approve", self.run_dir)
+
+    def test_global_default_executes_chain_before_verification(self):
+        self.global_plan()
+        self.execute_all()
+        self.assertEqual([t["status"] for t in kw.status_of(self.run_dir)["tasks"].values()], ["done", "done"])
+        result = self.pass_all_done()
+        self.assertEqual(result["phase"], "done")
+        report = self.run_dir / "report.md"
+        self.assertIn("source", report.read_text())
+        report.unlink()
+        run_kw("resume", self.run_dir)
+        self.assertTrue(report.exists())
+
+    def test_checkpoint_waits_for_independent_verification(self):
+        self.global_plan(checkpoint=True)
+        self.execute_all()
+        self.assertEqual([t["status"] for t in kw.status_of(self.run_dir)["tasks"].values()], ["done", "todo"])
+        run_kw("verdict", self.run_dir, "source", "pass")
+        self.assertEqual(run_kw("finish", self.run_dir)[1]["phase"], "executing")
+        self.execute_all()
+        self.assertEqual(self.pass_all_done()["phase"], "done")
+
+    def test_repair_invalidates_already_verified_consumer(self):
+        self.global_plan()
+        self.execute_all()
+        run_kw("verdict", self.run_dir, "result", "pass")
+        run_kw("verdict", self.run_dir, "source", "fail", "--findings", self.findings("incorrect"))
+        self.assertEqual(kw.status_of(self.run_dir)["tasks"]["result"]["status"], "todo")
+        run_kw("finish", self.run_dir)
+        self.execute_all()
+        self.assertEqual(self.pass_all_done()["phase"], "done")
+
+    def test_blocked_dependency_ends_partial_without_loop(self):
+        self.global_plan(checkpoint=True, max_repairs=0)
+        self.execute_all()
+        run_kw("verdict", self.run_dir, "source", "fail", "--findings", self.findings("missing"))
+        self.assertEqual(run_kw("finish", self.run_dir)[1]["phase"], "partial")
+        self.assertNotEqual(kw.status_of(self.run_dir)["tasks"]["result"]["status"], "verified")
+
+    def test_explicit_best_effort_dependency_can_continue(self):
+        self.global_plan(checkpoint=True, partial=True, max_repairs=0)
+        self.execute_all()
+        run_kw("verdict", self.run_dir, "source", "fail", "--findings", self.findings("missing"))
+        self.assertEqual(run_kw("finish", self.run_dir)[1]["phase"], "executing")
+        self.execute_all()
+        run_kw("verdict", self.run_dir, "result", "pass")
+        self.assertEqual(run_kw("finish", self.run_dir)[1]["phase"], "partial")
+
+    def test_stale_claim_cannot_complete_new_attempt(self):
+        self.to_executing(n=1)
+        first = run_kw("claim", self.run_dir, "--owner", "old")[1]
+        run_kw("resume", self.run_dir, "--force")
+        second = run_kw("claim", self.run_dir, "--owner", "new")[1]
+        self.assertNotEqual(first["token"], second["token"])
+        out = self.run_dir / first["output_dir"] / "result.md"
+        out.parent.mkdir(parents=True, exist_ok=True)
+        out.write_text("old")
+        code, _ = run_kw("done", self.run_dir, "t1", "--token", first["token"], "--output", out, check=False)
+        self.assertEqual(code, 2)
+        code, _ = run_kw("done", self.run_dir, "t1", "--token", second["token"], "--output", out, check=False)
+        self.assertEqual(code, 2)
+        self.complete("t1")
+
+    def test_valid_final_record_without_newline_remains_appendable(self):
+        self.to_executing(n=1)
+        ledger = self.run_dir / "ledger.jsonl"
+        ledger.write_text(ledger.read_text().rstrip("\n"))
+        run_kw("claim", self.run_dir, "--owner", "worker")
+        self.assertEqual(run_kw("status", self.run_dir)[1]["counts"]["running"], 1)
+
+    def test_middle_ledger_corruption_preserves_history_and_fails(self):
+        self.to_executing(n=1)
+        ledger = self.run_dir / "ledger.jsonl"
+        lines = ledger.read_text().splitlines(keepends=True)
+        lines.insert(1, "broken json\n")
+        corrupt = "".join(lines)
+        ledger.write_text(corrupt)
+        code, _ = run_kw("claim", self.run_dir, "--owner", "worker", check=False)
+        self.assertEqual(code, 2)
+        self.assertEqual(ledger.read_text(), corrupt)
+
+    def test_block_and_explicit_retry_recover_dependents(self):
+        self.global_plan()
+        first = run_kw("claim", self.run_dir, "--owner", "worker")[1]
+        run_kw("block", self.run_dir, "source", "--token", first["token"], "--reason", "missing local input")
+        run_kw("phase", self.run_dir, "verifying")
+        self.assertEqual(run_kw("finish", self.run_dir)[1]["phase"], "partial")
+        run_kw("resolve", self.run_dir, "source", "--retry", "--note", "input restored, old worker stopped")
+        self.execute_all()
+        self.assertEqual(self.pass_all_done()["phase"], "done")
+
+    def test_loop_rejected_completion_is_not_reported_as_success(self):
+        self.to_executing(n=1, verification="global")
+        (self.run_dir / "out" / "foreign.md").write_text("not this attempt")
+        (self.run_dir / "kw-loop.json").write_text(json.dumps({"fake": {
+            "cmd": [sys.executable, "-c", "print('KW_OUTPUT: out/foreign.md')"]}}))
+        result = run_kw("loop", self.run_dir, "--harness", "fake")[1]
+        self.assertEqual(result["stopped"], "partial")
+        self.assertTrue(any("error" in step for step in result["steps"]))
+        self.assertFalse(any("done" in step for step in result["steps"]))
+
+    def test_native_model_and_effort_are_separate_arguments(self):
+        self.run_dir.mkdir()
+        with patch("kw.subprocess.Popen") as popen:
+            popen.return_value.__enter__.return_value.wait.return_value = 0
+            kw.agent_call(kw.HARNESSES["codex"], self.run_dir, "test", "gpt-6-astra", "prompt", 1, "high")
+            command = popen.call_args.args[0]
+            self.assertEqual(command[command.index("--model") + 1], "gpt-6-astra")
+            self.assertIn('model_reasoning_effort="high"', command)
+            self.assertNotIn('model_reasoning_effort="gpt-6-astra"', command)
+
+    def test_timeout_terminates_child_process_group(self):
+        self.run_dir.mkdir()
+        marker = self.run_dir / "orphan.txt"
+        child = "import time; from pathlib import Path; time.sleep(1); Path(" + repr(str(marker)) + ").write_text('orphan')"
+        parent = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c'," + repr(child) + "]); time.sleep(10)"
+        cfg = {"cmd": [sys.executable, "-c", parent]}
+        code, _, _ = kw.agent_call(cfg, self.run_dir, "timeout", None, "", 0.2)
+        self.assertEqual(code, 124)
+        time.sleep(1.1)
+        self.assertFalse(marker.exists())
+
     def test_loop_end_to_end_with_fake_harness(self):
         run_kw("init", self.run_dir)
         fake = Path(__file__).with_name("tests_fake_agent.py")
@@ -325,10 +463,11 @@ class KwTest(unittest.TestCase):
         self.assertEqual(r["stopped"], "done", r)
         _, s = run_kw("status", self.run_dir)
         self.assertEqual(s["counts"]["verified"], 3)
+        self.assertEqual((self.run_dir / "out" / "verifier.calls").read_text().split(), ["stage", "stage"])
         t1 = [t for t in s["tasks"] if t["id"] == "t1"][0]
         self.assertEqual(t1["attempts"], 1)  # one repair after the fake verifier failed it
         self.assertEqual((self.run_dir / "out" / "t1.calls").read_text().split(), ["m-fast", "m-fast"])
-        self.assertEqual((self.run_dir / "out" / "acc.calls").read_text().split(), ["m-strong"])
+        self.assertEqual((self.run_dir / "out" / "acc.calls").read_text().split(), ["m-strong", "m-strong"])
 
 
 if __name__ == "__main__":

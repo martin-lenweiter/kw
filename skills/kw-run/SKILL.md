@@ -1,64 +1,57 @@
 ---
 name: kw-run
-description: Gate 2 of a kw run. Orchestrate execution of an approved plan by claiming tasks and running each in a subagent, including repair rounds after verifier findings. Use when a kw run is in phase executing.
+description: Coordinate implementation of an approved kw plan in phase executing. Claim work, delegate coherent assignments, record outputs, and handle focused repairs.
 ---
 
-# kw run (gate 2)
+# Implement
 
-Change state only with `kw`. Start with `kw resume <run>` (releases tasks left
-running by a crash) and `kw status <run>`.
+Use `kw` for all state changes. Start with `kw resume <run>` and
+`kw status <run>`. Resume marks expired claims as needing attention; it does not stop old
+processes or establish whether external actions succeeded.
 
-## Loop
+## Coordinate work
 
-1. `kw claim <run> --owner <agent-id>` returns a task with `goal`, `done_when`,
-   `attempts`, `last_findings` and `dependencies` (status and output of each
-   task it depends on), or `claimed: null` when nothing is runnable.
-2. Give the task to a subagent with only: the task JSON, `brief.md`, `plan.md`,
-   the answers in `questions.md`, and the relevant inputs. On a repair
-   (`attempts > 0`) include `last_findings` and say: fix every blocking finding;
-   do not redo passing work.
-3. The subagent writes `<run>/out/<id>.<ext>` (write to a temp name, then
-   rename). For row-based work, write one JSON line per row keyed by a stable
-   record ID and skip rows already present, so a restart does not redo them.
-4. `kw done <run> <id> --output out/<id>.<ext>`.
+1. `kw claim <run> --owner <agent-id>` returns an assignment, dependency outputs,
+   attempt token, and output directory, or `claimed: null`.
+2. Give the worker the assignment, essential scope and decisions, and pointers
+   to relevant inputs. Let it inspect further context when useful. On repair,
+   include prior findings and preserve passing work.
+3. Write the attempt's result at `out/<id>/<token>/result.md`. Link supporting artifacts
+   as needed; no universal row schema is required. Publish the file atomically.
+4. Record completion with
+   `kw done <run> <id> --token <token> --output out/<id>/<token>/result.md`.
+   Check that the command succeeded before reporting completion.
 
-Run independent tasks in parallel when the harness supports subagents. Without
-subagents, run them one after another. Keep paid calls and external writes in
-one place (this orchestrator or one designated worker) unless the plan says
-otherwise.
+Run independent assignments in parallel when useful and supported. Respect
+resource limits and use a designated writer for shared external destinations.
+Use the assigned model and separate effort setting, or runtime defaults; do not
+substitute a model silently.
 
-When `claim` returns null and `kw status` shows no running tasks:
-`kw phase <run> verifying` and hand over to kw-verify. Tasks waiting on
-dependencies become runnable after the verify round that settles them.
+Completed ordinary tasks unlock their consumers. Tasks marked `checkpoint`
+require verification first. When nothing is runnable and no workers remain,
+use `kw phase <run> verifying` and hand over to an independent verifier. Do not
+create a separate verifier for every task by default.
 
-## Models and capacity
+## Completion and recovery
 
-`claim` returns the task's `model` tier and `uses`. Map the tier to your
-harness: for example in Claude Code `fast` = Haiku, `standard` = Sonnet,
-`strong` = Opus; in Codex use the matching reasoning level. `claim` holds a
-task back while its resources are at capacity (`waiting_on_capacity`); claim
-again when a running task finishes.
+- Finish the authorized outcome without asking permission again for ordinary
+  methods or recoverable problems. Preserve the approved goal and constraints.
+- Record material user decisions in `decisions.md` so workers and the verifier
+  can see them. Do not silently change goals or completion criteria.
+- Distinguish incomplete work from successful implementation. Report missing
+  context or blocked access with concrete findings; never invent results.
+  If the coordinator cannot resolve it, record `kw block <run> <id> --token
+  <token> --reason "what is missing"` instead of completing the task.
+- Distinguish process failures from quality repairs. Inspect the failure before
+  retrying, respect retry limits, and do not repeat the same failing approach.
+- Before repeating an external write, check the destination for success using
+  its saved identifier. A timeout does not establish that publication failed.
+- Respect quotas and permissions. Do not switch harnesses to bypass a limit.
 
-Capacity limits concurrency, not quotas. If a shared quota runs out (for
-example the harness's web-search budget), do not let workers mark work as
-unavailable: pause those tasks or start them on another harness
-(`codex exec`, `claude -p`) with its own quota.
+For a `needs-human` task, surface its findings. After an authorized fix, record
+it in `decisions.md` and use
+`kw resolve <run> <id> --note "what was fixed"` to return it for review.
 
-## Needs-human tasks
-
-When a task stops as `needs-human`, show the user its findings. If the user
-fixes it or authorizes a fix, record that in `decisions.md`, apply the fix,
-then `kw resolve <run> <id> --note "<fix>" --by <user>` and hand over to
-kw-verify.
-
-## Rules
-
-- Follow the frozen plan. If a task cannot be done as specified, finish it with
-  what is possible and state the gap in the output; the verifier decides.
-- Never change `done_when` or add tasks.
-- When the user decides something during execution (a selection, an
-  ordering, extra spend), record it at once in `<run>/decisions.md`: the task,
-  the decision, the user's words and the date. Verifiers only see files, so a
-  decision that lives only in chat will be judged as a violation.
-- A crash loses at most the in-flight tasks; their leases expire and they
-  return to todo without counting as a repair attempt.
+For a failed process that needs a new attempt, first stop the old worker and
+reconcile any external write. Then use `kw resolve <run> <id> --retry --note
+"reason"`. A repaired existing result can instead use `kw resolve <run> <id> --output <path> --note "fix"` for independent verification.

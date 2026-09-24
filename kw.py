@@ -12,6 +12,9 @@ import contextlib
 import fcntl
 import json
 import os
+import re
+import signal
+import uuid
 import shlex
 import subprocess
 import sys
@@ -87,7 +90,11 @@ def apply(state, ev):
                 "depends_on": spec.get("depends_on", []),
                 "acceptance": bool(spec.get("acceptance")),
                 "uses": spec.get("uses", []),
-                "model": spec.get("model", "standard"),
+                "model": spec.get("model", "standard" if state["config"].get("verification") != "global" else None),
+                "effort": spec.get("effort"),
+                "inputs": spec.get("inputs", []),
+                "checkpoint": bool(spec.get("checkpoint")),
+                "allow_partial_inputs": bool(spec.get("allow_partial_inputs", state["config"].get("verification") != "global")),
                 "status": "todo",
                 "attempts": 0,
                 "owner": None,
@@ -102,7 +109,8 @@ def apply(state, ev):
         state["phase"] = "executing"
     elif t == "claim":
         task = tasks[ev["id"]]
-        task.update(status="running", owner=ev["owner"], lease_until=ev["lease_until"])
+        task.update(status="running", owner=ev["owner"], lease_until=ev["lease_until"],
+                    token=ev.get("token"), output_dir=ev.get("output_dir"))
     elif t == "done":
         task = tasks[ev["id"]]
         task.update(status="done", output=ev.get("output"), owner=None, lease_until=None)
@@ -117,15 +125,19 @@ def apply(state, ev):
         task["last_findings"] = ev["findings"]
         task["status"] = ev["next_status"]
         task["stop_reason"] = ev.get("stop_reason")
+        invalidate_descendants(state, ev["id"])
     elif t == "release":
         for tid in ev["ids"]:
             tasks[tid].update(status="todo", owner=None, lease_until=None)
     elif t == "resolve":
         task = tasks[ev["id"]]
-        task.update(status="done", stop_reason=None, resolution=ev["note"])
+        invalidate_descendants(state, ev["id"], recover=True)
+        task.update(status="todo" if ev.get("retry") else "done", stop_reason=None, resolution=ev["note"])
+        if ev.get("retry"):
+            task.update(output=None, token=None, owner=None, lease_until=None)
         if ev.get("output"):
             task["output"] = ev["output"]
-        state["phase"] = "verifying"
+        state["phase"] = "executing" if ev.get("retry") else "verifying"
     elif t == "escalate":
         for tid in ev["ids"]:
             tasks[tid]["status"] = "needs-human"
@@ -160,35 +172,40 @@ class Run:
             return []
         out = []
         with open(self.ledger) as fh:
-            for line in fh:
+            for number, line in enumerate(fh, 1):
                 line = line.strip()
                 if not line:
                     continue
                 try:
-                    out.append(json.loads(line))
-                except json.JSONDecodeError:
-                    # A torn final line from a crash mid-append is ignored.
-                    break
+                    event = json.loads(line)
+                    if not isinstance(event, dict) or "type" not in event:
+                        raise KwError(f"invalid ledger record at line {number}")
+                    out.append(event)
+                except json.JSONDecodeError as exc:
+                    raise KwError(f"corrupt ledger at line {number}: {exc.msg}") from exc
         return out
 
     def rebuild(self):
         state = empty_state()
         for ev in self.events():
-            apply(state, ev)
+            try:
+                apply(state, ev)
+            except (KeyError, TypeError, ValueError) as exc:
+                raise KwError(f"invalid ledger event {state['events'] + 1}: {exc}") from exc
         return state
 
     def load(self):
-        try:
-            state = json.loads(self.snapshot.read_text())
-            if state.get("events") == len(self.events()):
-                return state
-        except (OSError, json.JSONDecodeError):
-            pass
+        # The ledger is authoritative; rebuilding also validates every record.
         return self.rebuild()
 
     def append(self, state, ev):
         ev = {"ts": round(now(), 3), **ev}
         line = json.dumps(ev, ensure_ascii=False) + "\n"
+        if self.ledger.exists() and self.ledger.stat().st_size:
+            with open(self.ledger, "rb") as tail:
+                tail.seek(-1, os.SEEK_END)
+                if tail.read(1) != b"\n":
+                    line = "\n" + line
         with open(self.ledger, "a") as fh:
             fh.write(line)
             fh.flush()
@@ -223,9 +240,64 @@ def counts(state):
     return c
 
 
+def invalidate_descendants(state, tid, recover=False):
+    affected = {tid}
+    changed = True
+    while changed:
+        changed = False
+        for task in state["tasks"].values():
+            if task["id"] not in affected and affected.intersection(task["depends_on"]):
+                affected.add(task["id"])
+                changed = True
+                if task["status"] in ("done", "verified") or (
+                    recover and task["status"] == "needs-human"
+                    and task.get("stop_reason", "").startswith("blocked dependency")
+                ):
+                    task.update(status="todo", output=None, stop_reason=None)
+
+
 def ready(state, task):
-    """A task can run once every dependency is terminal (verified or needs-human)."""
-    return all(state["tasks"][d]["status"] in TERMINAL for d in task.get("depends_on", []))
+    for dep in task.get("depends_on", []):
+        source = state["tasks"][dep]
+        status = source["status"]
+        if status == "verified":
+            continue
+        if status == "needs-human" and task.get("allow_partial_inputs"):
+            continue
+        if (status == "done" and state["config"].get("verification") == "global"
+                and not source.get("checkpoint")):
+            continue
+        return False
+    return True
+
+
+def settle_blocked(run, state):
+    while True:
+        ids = [t["id"] for t in state["tasks"].values() if t["status"] == "todo"
+               and not t.get("allow_partial_inputs")
+               and any(state["tasks"][d]["status"] == "needs-human" for d in t["depends_on"])]
+        if not ids:
+            return
+        run.append(state, {"type": "escalate", "ids": ids, "reason": "blocked dependency needs resolution"})
+
+
+def write_report(run, state):
+    lines = [f"# {state.get('title', 'KW run')}", "", f"Status: {state['phase']}", ""]
+    for tid in state["order"]:
+        task = state["tasks"][tid]
+        lines.append(f"- {tid}: {task['status']} — {task['goal']}")
+        if task.get("output"):
+            lines.append(f"  Output: [{task['output']}]({task['output']})")
+        if task["status"] == "verified":
+            for note in task.get("notes", []):
+                lines.append(f"  Verification note: {note['text']}")
+        if task.get("stop_reason"):
+            lines.append(f"  Unresolved: {task['stop_reason']}")
+        for finding in task.get("last_findings", []) if task["status"] != "verified" else []:
+            lines.append(f"  Finding: {finding['text']}")
+    tmp = run.dir / "report.md.tmp"
+    tmp.write_text("\n".join(lines) + "\n")
+    os.replace(tmp, run.dir / "report.md")
 
 
 def blocked_todo(state):
@@ -259,9 +331,9 @@ def next_action(state):
     if p == "awaiting-answers":
         return "human: answer questions.md, then planner moves to clarifying or planning"
     if p == "planning":
-        return "planner: write plan.md and tasks.json, run the critic, kw tasks set, then move to awaiting-approval"
+        return "planner: write plan.md and tasks.json, kw tasks set, then move to awaiting-approval"
     if p == "awaiting-approval":
-        return "human: review plan.md and critique.md, then kw approve (or move back to planning)"
+        return "human: review plan.md, then kw approve (or move back to planning)"
     if p == "executing":
         blocked = len(blocked_todo(state))
         if c["todo"] - blocked or c["running"]:
@@ -279,7 +351,7 @@ def expire_leases(run, state):
     stale = [t["id"] for t in state["tasks"].values()
              if t["status"] == "running" and (t["lease_until"] or 0) < now()]
     if stale:
-        run.append(state, {"type": "release", "ids": stale, "reason": "lease expired"})
+        run.append(state, {"type": "escalate", "ids": stale, "reason": "lease expired; stop the old worker and inspect external writes before resolving"})
     return stale
 
 
@@ -301,6 +373,7 @@ def cmd_init(args):
             raise KwError(f"--resource needs name=capacity (capacity >= 1): {item}")
         resources[name] = int(cap)
     config["resources"] = resources
+    config["verification"] = args.verification
     run = Run(d)
     with run.locked():
         run.append(empty_state(), {"type": "init", "title": args.title or d.name, "config": config})
@@ -318,7 +391,7 @@ def cmd_status(args):
         "counts": counts(state),
         "next": next_action(state),
         "tasks": [
-            {k: state["tasks"][tid].get(k) for k in ("id", "status", "attempts", "owner", "stop_reason")}
+            {k: state["tasks"][tid].get(k) for k in ("id", "status", "attempts", "owner", "token", "output_dir", "output", "model", "effort", "stop_reason")}
             for tid in state["order"]
         ],
     }
@@ -357,8 +430,11 @@ def cmd_tasks_set(args):
                 raise KwError(f"task missing {key}: {s}")
         if s["id"] in seen:
             raise KwError(f"duplicate task id {s['id']}")
-        if s.get("model", "standard") not in MODEL_TIERS:
-            raise KwError(f"task {s['id']} model must be one of {', '.join(sorted(MODEL_TIERS))}")
+        if not isinstance(s["id"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", s["id"]):
+            raise KwError("task id must contain only letters, numbers, underscores and hyphens")
+        for field in ("model", "effort"):
+            if s.get(field) is not None and (not isinstance(s[field], str) or not s[field].strip()):
+                raise KwError(f"task {s['id']} {field} must be a nonempty string")
         seen.add(s["id"])
     for s in specs:
         for d in s.get("depends_on", []):
@@ -432,10 +508,17 @@ def cmd_claim(args):
                     held[tid] = block
                     continue
                 lease = args.lease or state["config"]["lease_seconds"]
+                if lease <= 0:
+                    raise KwError("lease must be positive")
+                token = uuid.uuid4().hex
+                output_dir = f"out/{tid}/{token}"
+                (run.dir / output_dir).mkdir(parents=True, exist_ok=True)
                 run.append(state, {"type": "claim", "id": tid, "owner": args.owner,
-                                   "lease_until": now() + lease})
+                                   "lease_until": now() + lease, "token": token, "output_dir": output_dir})
                 return {"claimed": tid, "goal": task["goal"], "done_when": task["done_when"],
-                        "model": task.get("model", "standard"), "uses": task.get("uses", []),
+                        "model": task.get("model"), "effort": task.get("effort"),
+                        "token": token, "output_dir": output_dir, "inputs": task.get("inputs", []),
+                        "uses": task.get("uses", []),
                         "attempts": task["attempts"], "last_findings": task["last_findings"],
                         "dependencies": {d: {"status": state["tasks"][d]["status"],
                                              "output": state["tasks"][d]["output"]}
@@ -452,10 +535,31 @@ def cmd_done(args):
         task = get_task(state, args.id)
         if task["status"] != "running":
             raise KwError(f"task {args.id} is {task['status']}, not running")
-        if args.output and not (run.dir / args.output).exists():
+        if task.get("token"):
+            if args.token != task["token"] or task["lease_until"] <= now():
+                raise KwError("claim token does not match or lease expired")
+            if not args.output:
+                raise KwError("output required")
+            target = (run.dir / args.output).resolve()
+            if not target.is_relative_to((run.dir / task["output_dir"]).resolve()):
+                raise KwError("output must be within the current attempt output_dir")
+        if args.output and not (run.dir / args.output).is_file():
             raise KwError(f"output not found: {args.output}")
         run.append(state, {"type": "done", "id": args.id, "output": args.output})
     return {"id": args.id, "status": "done"}
+
+
+def cmd_block(args):
+    """Record a worker blocker without pretending implementation completed."""
+    run = Run(args.run)
+    with run.locked():
+        state = run.load()
+        require_phase(state, "executing")
+        task = get_task(state, args.id)
+        if task["status"] != "running" or task.get("token") != args.token:
+            raise KwError("block requires the active claim token")
+        run.append(state, {"type": "escalate", "ids": [args.id], "reason": args.reason})
+    return {"id": args.id, "status": "needs-human"}
 
 
 def read_findings(path):
@@ -508,7 +612,10 @@ def cmd_finish(args):
         c = counts(state)
         if c["done"]:
             raise KwError(f"{c['done']} task(s) still await a verdict")
-        if c["todo"]:
+        if c["running"]:
+            raise KwError("tasks still running")
+        settle_blocked(run, state)
+        if counts(state)["todo"]:
             repairs = [t["id"] for t in state["tasks"].values() if t["status"] == "todo" and t["attempts"]]
             # The run round cap stops tasks that already had a repair. A task that
             # failed for the first time still gets one repair; stall detection and
@@ -517,6 +624,7 @@ def cmd_finish(args):
             if capped and state["round"] >= state["config"]["max_rounds"]:
                 run.append(state, {"type": "escalate", "ids": capped,
                                    "reason": f"run round cap reached ({state['config']['max_rounds']})"})
+            settle_blocked(run, state)
             if counts(state)["todo"]:
                 # Only repair rounds count against max_rounds; dependency stages do not.
                 run.append(state, {"type": "phase", "from": "verifying", "to": "executing",
@@ -529,6 +637,7 @@ def cmd_finish(args):
         accepted = all(t["status"] == "verified" for t in accept)
         final = "done" if counts(state)["needs-human"] == 0 and accepted else "partial"
         run.append(state, {"type": "phase", "from": "verifying", "to": final})
+        write_report(run, state)
     return {"phase": final, "counts": counts(state)}
 
 
@@ -544,11 +653,15 @@ def cmd_resolve(args):
             raise KwError(f"cannot resolve in phase {state['phase']}")
         if any(t["status"] == "running" for t in state["tasks"].values()):
             raise KwError("tasks still running")
-        if args.output and not (run.dir / args.output).exists():
+        if args.output and not (run.dir / args.output).is_file():
             raise KwError(f"output not found: {args.output}")
+        if args.retry and args.output:
+            raise KwError("--retry cannot be combined with --output")
+        if not args.retry and not (args.output or task.get("output")):
+            raise KwError("provide repaired --output or use --retry after stopping the old worker")
         run.append(state, {"type": "resolve", "id": args.id, "note": args.note,
-                           "by": args.by, "output": args.output})
-    return {"id": args.id, "status": "done", "phase": "verifying"}
+                           "by": args.by, "output": args.output, "retry": args.retry})
+    return {"id": args.id, "status": task["status"], "phase": state["phase"]}
 
 
 def cmd_resume(args):
@@ -564,6 +677,8 @@ def cmd_resume(args):
                     run.append(state, {"type": "release", "ids": released, "reason": "resume --force"})
             else:
                 released = expire_leases(run, state)
+        if state["phase"] in ("done", "partial"):
+            write_report(run, state)
     return {"phase": state["phase"], "released": released, "next": next_action(state)}
 
 
@@ -582,13 +697,14 @@ def cmd_rebuild(args):
 SKILLS = Path(__file__).resolve().parent / "skills"
 HARNESSES = {
     "claude": {
-        "cmd": ["claude", "-p", "{prompt}", "--model", "{model}", "--permission-mode", "acceptEdits",
+        "cmd": ["claude", "-p", "{prompt}", "--permission-mode", "acceptEdits",
                 "--allowedTools=Bash,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch"],
+        "native": "claude",
         "models": {"fast": "haiku", "standard": "sonnet", "strong": "opus"},
     },
     "codex": {
-        "cmd": ["codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write",
-                "-c", "model_reasoning_effort={model}", "{prompt}"],
+        "cmd": ["codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "{prompt}"],
+        "native": "codex",
         "models": {"fast": "low", "standard": "medium", "strong": "high"},
     },
 }
@@ -599,31 +715,55 @@ def loop_config(run_dir, harness):
     cfg = json.loads(json.dumps(HARNESSES[harness])) if harness in HARNESSES else {"cmd": [], "models": {}}
     path = Path(run_dir) / "kw-loop.json"
     if path.exists():
-        cfg.update(json.loads(path.read_text()).get(harness, {}))
+        override = json.loads(path.read_text()).get(harness, {})
+        cfg.update(override)
+        if "cmd" in override:
+            cfg.pop("native", None)
     if not cfg.get("cmd"):
         raise KwError(f"no command template for harness {harness}")
     return cfg
 
 
-def agent_call(cfg, run_dir, name, model_tier, prompt, timeout):
-    model = cfg["models"].get(model_tier, model_tier)
-    cmd = [part.replace("{model}", model).replace("{prompt}", prompt).replace("{run}", str(run_dir))
-           for part in cfg["cmd"]]
+def agent_call(cfg, run_dir, name, model_tier, prompt, timeout, effort=None):
+    model = cfg.get("models", {}).get(model_tier, model_tier) or ""
+    cmd = [part.replace("{model}", model).replace("{effort}", effort or "")
+           .replace("{prompt}", prompt).replace("{run}", str(run_dir)) for part in cfg["cmd"]]
+    native = cfg.get("native")
+    if native == "codex":
+        if model_tier in MODEL_TIERS:
+            effort = effort or model
+        elif model:
+            cmd[2:2] = ["--model", model]
+        if effort:
+            cmd[2:2] = ["-c", f'model_reasoning_effort="{effort}"']
+    elif native == "claude":
+        if model:
+            cmd.extend(["--model", model])
+        if effort:
+            cmd.extend(["--effort", effort])
     logs = Path(run_dir) / "logs"
     logs.mkdir(exist_ok=True)
-    log = logs / f"{name}-{int(time.time())}.log"
+    log = logs / f"{name}-{uuid.uuid4().hex}.log"
     with open(log, "w") as fh:
         fh.write("$ " + shlex.join([c if c != prompt else "<prompt>" for c in cmd]) + "\n\n")
         fh.flush()
         try:
-            p = subprocess.run(cmd, cwd=run_dir, stdin=subprocess.DEVNULL, stdout=fh,
-                               stderr=subprocess.STDOUT, timeout=timeout, text=True)
-            code = p.returncode
-        except subprocess.TimeoutExpired:
-            code = 124
-    text = log.read_text()
+            with subprocess.Popen(cmd, cwd=run_dir, stdin=subprocess.DEVNULL, stdout=fh,
+                                  stderr=subprocess.STDOUT, text=True, start_new_session=True) as process:
+                try:
+                    code = process.wait(timeout=timeout)
+                except subprocess.TimeoutExpired:
+                    try:
+                        os.killpg(process.pid, signal.SIGKILL)
+                    except ProcessLookupError:
+                        pass
+                    process.wait()
+                    code = 124
+        except OSError as exc:
+            fh.write(str(exc))
+            code = 127
     output = None
-    for line in reversed(text.splitlines()):
+    for line in reversed(log.read_text().splitlines()):
         if line.strip().startswith("KW_OUTPUT:"):
             output = line.split(":", 1)[1].strip()
             break
@@ -649,40 +789,64 @@ def work_prompt(run_dir, task):
                   f"Findings: {json.dumps(task.get('last_findings', []), ensure_ascii=False)} ")
     deps = task.get("dependencies") or {}
     return (f"You are a kw worker for task {task['claimed']} in the run at {run_dir}. "
-            f"Follow {SKILLS}/kw-run/SKILL.md for the worker rules. Read brief.md, plan.md, questions.md, "
-            f"decisions.md (if present) and the inputs the task names. Task goal: {task['goal']} "
+            f"Follow {SKILLS}/kw-run/SKILL.md for the worker rules. Read brief.md and decisions.md if present; "
+            f"consult plan.md and supporting context as needed. Inputs: {json.dumps(task.get('inputs', []))}. Task goal: {task['goal']} "
             f"done_when: {task['done_when']} Dependency outputs: {json.dumps(deps, ensure_ascii=False)} {repair}"
-            f"Write your result to out/{task['claimed']}.<ext> (write a temp file, then rename). "
+            f"Write your result inside {task['output_dir']}/ (write a temp file, then rename). "
+            "Before repeating external publishing, check saved destination IDs and whether the write succeeded. "
             "Do not run kw. End your reply with one line: KW_OUTPUT: <path relative to the run dir>.")
 
 
-def verify_prompt(run_dir, tid):
-    return (f"You are the independent kw verifier for task {tid} in the run at {run_dir}. "
-            f"Follow {SKILLS}/kw-verify/SKILL.md exactly for this one task, including writing findings "
-            f"and recording the verdict with: kw verdict {run_dir} {tid} pass|fail --findings <file>. "
-            "Do not verify other tasks and do not run kw finish.")
+def verify_prompt(run_dir, pending):
+    return (f"You are the independent kw verifier for the run at {run_dir}. "
+            f"Follow {SKILLS}/kw-verify/SKILL.md. Assess the combined result against brief.md and decisions.md. "
+            f"Pending tasks: {json.dumps(pending)}. Record verdicts with kw verdict {run_dir} <id> pass|fail "
+            "--findings <file>. Review dependencies before their consumers. Refresh state after each verdict: "
+            "a failure invalidates downstream outputs, which must not receive verdicts until rerun. "
+            "At an intermediate checkpoint, assess the available work without claiming final acceptance. "
+            "Do not run kw finish.")
+
+
+def block_failed_attempt(run_dir, task, reason):
+    run = Run(run_dir)
+    with run.locked():
+        state = run.load()
+        current = get_task(state, task["claimed"])
+        if current["status"] == "running" and current.get("token") == task["token"]:
+            run.append(state, {"type": "escalate", "ids": [task["claimed"]], "reason": reason})
 
 
 def cmd_loop(args):
     run_dir = Path(args.run).resolve()
     cfg = loop_config(run_dir, args.harness)
+    if args.timeout <= 0:
+        raise KwError("timeout must be positive")
     log = []
     for _ in range(args.max_steps):
         state = status_of(run_dir)
         phase = state["phase"]
         if phase in ("awaiting-answers", "awaiting-approval", "done", "partial"):
+            if phase in ("done", "partial"):
+                result = run_json(["resume", str(run_dir)])
+                if "error" in result:
+                    return {"stopped": phase, **result, "steps": log}
             return {"stopped": phase, "next": next_action(state), "steps": log}
         if phase in ("clarifying", "planning"):
-            code, _, lg = agent_call(cfg, run_dir, f"plan-{phase}", "strong", plan_prompt(run_dir, phase), args.timeout)
+            code, _, lg = agent_call(cfg, run_dir, f"plan-{phase}", args.model, plan_prompt(run_dir, phase), args.timeout, args.effort)
             log.append({"role": "planner", "phase": phase, "exit": code, "log": str(lg)})
-            if status_of(run_dir)["phase"] == phase:
+            if code != 0 or status_of(run_dir)["phase"] == phase:
                 return {"stopped": phase, "error": "planner made no progress", "steps": log}
             continue
         if phase == "executing":
-            run_json(["resume", str(run_dir)])
+            result = run_json(["resume", str(run_dir)])
+            if "error" in result:
+                return {"stopped": phase, **result, "steps": log}
             claims = []
             while True:
-                r = run_json(["claim", str(run_dir), "--owner", f"kw-loop-{args.harness}"])
+                r = run_json(["claim", str(run_dir), "--owner", f"kw-loop-{args.harness}",
+                              "--lease", str(args.timeout + 60)])
+                if "error" in r:
+                    return {"stopped": phase, **r, "steps": log}
                 if not r.get("claimed"):
                     break
                 claims.append(r)
@@ -691,36 +855,38 @@ def cmd_loop(args):
                     return {"stopped": phase, "error": "tasks running under another owner", "steps": log}
                 r = run_json(["phase", str(run_dir), "verifying"])
                 log.append({"role": "orchestrator", "phase": "verifying", "result": r})
+                if "error" in r:
+                    return {"stopped": phase, **r, "steps": log}
                 continue
 
             def work(task):
-                code, output, lg = agent_call(cfg, run_dir, f"work-{task['claimed']}", task.get("model", "standard"),
-                                              work_prompt(run_dir, task), args.timeout)
-                if code == 0 and output and (run_dir / output).exists():
-                    run_json(["done", str(run_dir), task["claimed"], "--output", output])
-                    return {"task": task["claimed"], "done": output, "log": str(lg)}
-                return {"task": task["claimed"], "exit": code, "output": output, "log": str(lg),
-                        "note": "left running; its lease expires and kw resume retries it"}
+                code, output, lg = agent_call(cfg, run_dir, f"work-{task['claimed']}", task.get("model") or args.model,
+                                              work_prompt(run_dir, task), args.timeout, task.get("effort") or args.effort)
+                result = {"error": f"worker exit {code}; missing or invalid output"}
+                if code == 0 and output:
+                    result = run_json(["done", str(run_dir), task["claimed"], "--output", output,
+                                       "--token", task["token"]])
+                    if "error" not in result:
+                        return {"task": task["claimed"], "done": output, "log": str(lg)}
+                block_failed_attempt(run_dir, task, result["error"] + "; inspect output and external writes before resolving")
+                return {"task": task["claimed"], "exit": code, "output": output, "log": str(lg), **result}
 
             with ThreadPoolExecutor(max_workers=len(claims)) as ex:
                 log.extend(ex.map(work, claims))
-            if any("done" not in x for x in log[-len(claims):]):
-                return {"stopped": phase, "error": "worker(s) failed; see logs", "steps": log}
             continue
         if phase == "verifying":
             pending = [t["id"] for t in state["tasks"].values() if t["status"] == "done"]
             if pending:
-                def check(tid):
-                    tier = state["tasks"][tid].get("model", "standard")
-                    code, _, lg = agent_call(cfg, run_dir, f"verify-{tid}", tier, verify_prompt(run_dir, tid), args.timeout)
-                    return {"task": tid, "verifier_exit": code, "log": str(lg)}
-                with ThreadPoolExecutor(max_workers=len(pending)) as ex:
-                    log.extend(ex.map(check, pending))
+                code, _, lg = agent_call(cfg, run_dir, "verify", args.model,
+                                         verify_prompt(run_dir, pending), args.timeout, args.effort)
+                log.append({"role": "verifier", "tasks": pending, "exit": code, "log": str(lg)})
                 left = [t["id"] for t in status_of(run_dir)["tasks"].values() if t["status"] == "done"]
-                if left:
-                    return {"stopped": phase, "error": f"no verdict recorded for {left}", "steps": log}
+                if code != 0 or left:
+                    return {"stopped": phase, "error": f"verifier exit {code}; tasks without verdict: {left}", "steps": log}
             r = run_json(["finish", str(run_dir)])
             log.append({"role": "orchestrator", "finish": r})
+            if "error" in r:
+                return {"stopped": phase, **r, "steps": log}
             continue
         return {"stopped": phase, "steps": log}
     return {"stopped": "max-steps", "steps": log}
@@ -745,6 +911,7 @@ def build_parser():
     s.add_argument("--title")
     for k in DEFAULTS:
         s.add_argument(f"--{k.replace('_', '-')}", dest=k, type=int)
+    s.add_argument("--verification", choices=["global", "per-task"], default="global")
     s.add_argument("--resource", action="append",
                    help="name=capacity, e.g. web-search=8 chrome=4 clay=1 (repeatable)")
     s.set_defaults(fn=cmd_init)
@@ -780,7 +947,15 @@ def build_parser():
     s.add_argument("run")
     s.add_argument("id")
     s.add_argument("--output")
+    s.add_argument("--token")
     s.set_defaults(fn=cmd_done)
+
+    s = sub.add_parser("block", help="record why a claimed task cannot continue")
+    s.add_argument("run")
+    s.add_argument("id")
+    s.add_argument("--token", required=True)
+    s.add_argument("--reason", required=True)
+    s.set_defaults(fn=cmd_block)
 
     s = sub.add_parser("verdict", help="record the verifier's verdict for a task")
     s.add_argument("run")
@@ -799,11 +974,12 @@ def build_parser():
     s.add_argument("--note", required=True)
     s.add_argument("--by", default="human")
     s.add_argument("--output")
+    s.add_argument("--retry", action="store_true", help="retry after stopping the old worker and checking external writes")
     s.set_defaults(fn=cmd_resolve)
 
-    s = sub.add_parser("resume", help="rebuild state and release expired leases")
+    s = sub.add_parser("resume", help="rebuild state and flag expired claims for resolution")
     s.add_argument("run")
-    s.add_argument("--force", action="store_true", help="release all running tasks")
+    s.add_argument("--force", action="store_true", help="release running tasks only after stopping old workers and reconciling external writes")
     s.set_defaults(fn=cmd_resume)
 
     s = sub.add_parser("rebuild", help="rebuild state.json from the ledger")
@@ -813,6 +989,8 @@ def build_parser():
     s = sub.add_parser("loop", help="drive the run headlessly through a CLI agent harness")
     s.add_argument("run")
     s.add_argument("--harness", default="claude", help="claude, codex, or a name defined in <run>/kw-loop.json")
+    s.add_argument("--model", help="model for planner/verifier and workers without an override; native default if omitted")
+    s.add_argument("--effort", help="reasoning effort, independent of model")
     s.add_argument("--timeout", type=int, default=3600, help="seconds per agent call")
     s.add_argument("--max-steps", type=int, default=50)
     s.set_defaults(fn=cmd_loop)
