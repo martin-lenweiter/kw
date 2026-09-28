@@ -18,7 +18,9 @@ claim the unfinished overall result has passed.
 
 Check the combined deliverable against the original brief and recorded user
 decisions, then attribute defects to the affected task criteria. Check sources
-and substantive claims, not just whether files or table columns exist. Verify
+and substantive claims, not just whether files or table columns exist. A 403,
+429, or bot challenge from a live domain is a note, not a defect; a 404, an
+unresolved domain, or a page that does not mention the subject is blocking. Verify
 the actual destination when the task includes publication.
 
 Use mechanical checks for objective requirements where useful, and judgment

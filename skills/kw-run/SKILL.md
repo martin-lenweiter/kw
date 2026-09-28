@@ -27,6 +27,15 @@ resource limits and use a designated writer for shared external destinations.
 Use the assigned model and separate effort setting, or runtime defaults; do not
 substitute a model silently.
 
+For Codex workers, run `codex exec` with the prompt on stdin (`- < prompt.md`)
+or with stdin closed, because an open stdin makes it wait for more input.
+Capture the final message with `-o <file>`. Verifiers that check live sources
+need network access (`-s workspace-write -c
+sandbox_workspace_write.network_access=true`); the read-only sandbox blocks DNS.
+Stop one worker by its PID, because a pattern match on the model name stops
+every worker on that model. A claim lease lasts 30 minutes; for a longer task,
+run `kw resume` and claim again.
+
 Completed ordinary tasks unlock their consumers. Tasks marked `checkpoint`
 require verification first. When nothing is runnable and no workers remain,
 use `kw phase <run> verifying` and hand over to an independent verifier. Do not
