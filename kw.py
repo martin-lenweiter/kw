@@ -852,7 +852,7 @@ SKILLS = Path(__file__).resolve().parent / "skills"
 HARNESSES = {
     "claude": {
         "cmd": ["claude", "-p", "{prompt}", "--permission-mode", "acceptEdits",
-                "--allowedTools=Bash,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch"],
+                "--allowedTools=Bash,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,mcp__chrome-devtools"],
         "native": "claude",
         "models": {"fast": "haiku", "standard": "sonnet", "strong": "opus"},
     },

@@ -71,6 +71,11 @@ Make the three skills available to your agent, or point it directly to
 `kw loop` coordinates separate agent processes without an open chat session.
 It requires an installed, authenticated Claude Code or Codex CLI.
 
+Claude workers can use an installed `chrome-devtools` MCP server without
+permission prompts. KW inherits the server configuration from Claude Code;
+configure that server in your runtime before using browser tasks. Tasks that
+share a browser must declare the same capacity-one resource in `uses`.
+
 ```sh
 kw init runs/partner-research --brief brief.md --max-parallel 4
 kw loop runs/partner-research --harness claude
