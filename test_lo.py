@@ -9,9 +9,9 @@ from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import light_orchestrator as lo
+import lo
 
-KW = [sys.executable, str(Path(__file__).with_name("light_orchestrator.py"))]
+KW = [sys.executable, str(Path(__file__).with_name("lo.py"))]
 
 
 def run_kw(*args, check=True):
@@ -548,7 +548,7 @@ class KwTest(unittest.TestCase):
 
     def test_native_model_and_effort_are_separate_arguments(self):
         self.run_dir.mkdir()
-        with patch("light_orchestrator.subprocess.Popen") as popen:
+        with patch("lo.subprocess.Popen") as popen:
             popen.return_value.__enter__.return_value.wait.return_value = 0
             lo.agent_call(lo.HARNESSES["codex"], self.run_dir, "test", "gpt-6-astra", "prompt", 1, "high")
             command = popen.call_args.args[0]

@@ -1,6 +1,6 @@
-# light-orchestrator
+# lo (light-orchestrator)
 
-light-orchestrator keeps the state of a multi-step agent job outside the
+`lo` keeps the state of a multi-step agent job outside the
 model: what was agreed, what is done, what is checked, and what changed. The
 model does not have to remember the plan, the progress, or a requirement the
 user added halfway through; it reads the current state and the next action.
@@ -36,23 +36,23 @@ the verifier passes it. With `"checkpoint": "human"`, the run pauses until you
 review it, for example to approve a design:
 
 ```sh
-light-orchestrator verdict <run> design pass
-light-orchestrator verdict <run> design fail --note "simpler layout, larger prices"
+lo verdict <run> design pass
+lo verdict <run> design fail --note "simpler layout, larger prices"
 ```
 
 A rejected task goes back to its worker with your note.
 
 When you add or change something during a run, the orchestrator records it
-with `light-orchestrator amend`. The run reopens only the affected tasks.
+with `lo amend`. The run reopens only the affected tasks.
 
 ## Setup
 
-light-orchestrator is one Python 3 script with no third-party dependencies.
+`lo` is one Python 3 script with no third-party dependencies.
 Put it on your PATH, for example:
 
 ```sh
-ln -s "$PWD/light_orchestrator.py" ~/.local/bin/light-orchestrator
-light-orchestrator --help
+ln -s "$PWD/lo.py" ~/.local/bin/lo
+lo --help
 ```
 
 Give your agent the four skills in [`skills/`](skills): plan, run, verify,
@@ -62,22 +62,22 @@ and graph.
 
 Describe the result you want to your agent:
 
-> Use light-orchestrator-plan to build a site that compares fast-food prices
+> Use lo-plan to build a site that compares fast-food prices
 > across delivery apps. Show me the design before building the rest.
 
 Or run it headless from the terminal. `loop` drives separate agent processes
 and pauses for answers, plan approval, and human reviews:
 
 ```sh
-light-orchestrator init runs/prices --brief brief.md --max-parallel 4
-light-orchestrator loop runs/prices --harness claude   # or --harness codex
-light-orchestrator status runs/prices
-light-orchestrator graph runs/prices
+lo init runs/prices --brief brief.md --max-parallel 4
+lo loop runs/prices --harness claude   # or --harness codex
+lo status runs/prices
+lo graph runs/prices
 ```
 
 After a pause, answer `questions.md` and run
-`light-orchestrator phase runs/prices planning`, or approve with
-`light-orchestrator approve runs/prices`, or give a review verdict, then run
+`lo phase runs/prices planning`, or approve with
+`lo approve runs/prices`, or give a review verdict, then run
 `loop` again. `--timeout` sets the limit per agent call (default one hour).
 `<run>/loop.json` overrides the harness command.
 

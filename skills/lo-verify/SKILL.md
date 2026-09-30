@@ -1,13 +1,13 @@
 ---
-name: light-orchestrator-verify
-description: Independently verify a light-orchestrator run's combined result, or a planned checkpoint, in phase verifying. Record task verdicts and findings, then close the round.
+name: lo-verify
+description: Independently verify a lo (light-orchestrator) run's combined result, or a planned checkpoint, in phase verifying. Record task verdicts and findings, then close the round.
 ---
 
 # Verify
 
 Work in a fresh context, independent of the workers. Read the brief, the
 answers, `decisions.md`, `plan.md`, the task definitions, and the outputs.
-`light-orchestrator status <run>` lists the tasks that await a verdict.
+`lo status <run>` lists the tasks that await a verdict.
 
 ## Check the result
 
@@ -39,12 +39,12 @@ Write findings when needed:
 requirements. Reuse a `key` when the same defect persists.
 
 ```sh
-light-orchestrator verdict <run> <id> pass [--findings <file>]
-light-orchestrator verdict <run> <id> fail --findings <file>
+lo verdict <run> <id> pass [--findings <file>]
+lo verdict <run> <id> fail --findings <file>
 ```
 
 When every agent-reviewed task has a verdict, run
-`light-orchestrator finish <run>`. It sends failures back for repair,
+`lo finish <run>`. It sends failures back for repair,
 continues after checkpoints, or ends the run as `done` or `partial`. While a
 human review is pending, it stops and names the review; run it again after
 the user's verdict. The final report states the outputs, the verification

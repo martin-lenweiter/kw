@@ -1,26 +1,26 @@
 ---
-name: light-orchestrator-plan
-description: Plan a new light-orchestrator run or continue one in clarifying, awaiting-answers, planning, or awaiting-approval. Define tasks and how each is checked, obtain an independent critique, and request user approval.
+name: lo-plan
+description: Plan a new lo (light-orchestrator) run or continue one in clarifying, awaiting-answers, planning, or awaiting-approval. Define tasks and how each is checked, obtain an independent critique, and request user approval.
 ---
 
 # Plan
 
-light-orchestrator keeps the state of a multi-step job outside your context:
+`lo` keeps the state of a multi-step job outside your context:
 what was agreed, what is done, what is checked, and what changed. You choose
 the approach, the task split, the checks, and the models. Change state only
-through the `light-orchestrator` CLI; never edit `state.json` or
+through the `lo` CLI; never edit `state.json` or
 `ledger.jsonl`.
 
-Start with `light-orchestrator status <run>` and follow `next`. For new work,
-use `light-orchestrator init <run> --brief <file>`.
+Start with `lo status <run>` and follow `next`. For new work,
+use `lo init <run> --brief <file>`.
 
 ## Clarify
 
 Ask only about missing information that changes the result or your authority,
 such as scope, costs, and external writes. Record questions and answers in
 `questions.md`. If you need an answer, run
-`light-orchestrator phase <run> awaiting-answers` and stop. When the brief is
-clear, run `light-orchestrator phase <run> planning`.
+`lo phase <run> awaiting-answers` and stop. When the brief is
+clear, run `lo phase <run> planning`.
 
 ## Plan the tasks
 
@@ -50,10 +50,10 @@ Write `tasks.json`, for example:
   needs judgment; implementers use a medium model, never a small one. The
   planner, orchestrator, and verifier run on large models.
 - Declare shared surfaces in `uses` and their capacity with
-  `light-orchestrator init --resource <name>=<limit>` only where parallel
+  `lo init --resource <name>=<limit>` only where parallel
   tasks would conflict.
 
-Load the tasks with `light-orchestrator tasks set <run> <run>/tasks.json`.
+Load the tasks with `lo tasks set <run> <run>/tasks.json`.
 
 ## Critique and approval
 
@@ -63,6 +63,6 @@ findings in `critique.md` and resolve material issues.
 
 Show the user the deliverables, how each is checked, the human checkpoints,
 the agents and models, and any costs or external writes. Then run
-`light-orchestrator phase <run> awaiting-approval`. Only the user approves,
-with `light-orchestrator approve <run>`. Approval freezes task goals and
+`lo phase <run> awaiting-approval`. Only the user approves,
+with `lo approve <run>`. Approval freezes task goals and
 `done_when`; only the user changes them later, through `amend`.

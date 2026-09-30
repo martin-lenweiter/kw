@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""light-orchestrator: run state for plan -> execute -> verify agent workflows.
+"""lo: run state for plan -> execute -> verify agent workflows.
 
 All state lives in one run directory. ledger.jsonl is the append-only source
 of truth; state.json is a snapshot rebuilt from it on demand. Every command
 takes an exclusive lock, validates the transition, appends one event, and
-rewrites the snapshot atomically. Agents must change state only through light-orchestrator.
+rewrites the snapshot atomically. Agents must change state only through lo.
 """
 
 import argparse
@@ -38,7 +38,7 @@ PHASES = {
     "executing": {"verifying"},
     "verifying": {"executing", "done", "partial"},
     "done": set(),
-    "partial": {"verifying"},  # only through light-orchestrator resolve
+    "partial": {"verifying"},  # only through lo resolve
 }
 TASK_STATUSES = {"todo", "running", "done", "verified", "needs-human"}
 TERMINAL = {"verified", "needs-human"}
@@ -376,9 +376,9 @@ def next_action(state):
     if p == "awaiting-answers":
         return "human: answer questions.md, then planner moves to clarifying or planning"
     if p == "planning":
-        return "planner: write plan.md and tasks.json, light-orchestrator tasks set, then move to awaiting-approval"
+        return "planner: write plan.md and tasks.json, lo tasks set, then move to awaiting-approval"
     if p == "awaiting-approval":
-        return "human: review plan.md, then light-orchestrator approve (or move back to planning)"
+        return "human: review plan.md, then lo approve (or move back to planning)"
     if p == "executing":
         blocked = len(blocked_todo(state))
         if c["todo"] - blocked or c["running"]:
@@ -390,9 +390,9 @@ def next_action(state):
         if agent:
             return f"verifier: {len(agent)} task(s) awaiting verification"
         if human:
-            return (f"human: review {', '.join(human)}, then light-orchestrator verdict <run> <id> pass, "
+            return (f"human: review {', '.join(human)}, then lo verdict <run> <id> pass, "
                     "or fail --note \"what to change\"")
-        return "verifier: light-orchestrator finish (moves to executing for repairs, or done/partial)"
+        return "verifier: lo finish (moves to executing for repairs, or done/partial)"
     return f"run is {p}"
 
 
@@ -516,7 +516,7 @@ def cmd_phase(args):
         if to not in PHASES.get(cur, set()):
             raise OrchestratorError(f"cannot move {cur} -> {to}")
         if to == "executing" and cur == "awaiting-approval":
-            raise OrchestratorError("use light-orchestrator approve to start execution")
+            raise OrchestratorError("use lo approve to start execution")
         if to == "verifying":
             waiting = set(blocked_todo(state))
             if any(t["status"] == "running" or (t["status"] == "todo" and t["id"] not in waiting)
@@ -525,7 +525,7 @@ def cmd_phase(args):
         if to == "awaiting-approval" and not state["tasks"]:
             raise OrchestratorError("no tasks set")
         if cur == "verifying":
-            raise OrchestratorError("use light-orchestrator finish to leave verifying")
+            raise OrchestratorError("use lo finish to leave verifying")
         run.append(state, {"type": "phase", "from": cur, "to": to})
     return {"phase": to}
 
@@ -949,8 +949,8 @@ def status_of(run_dir):
 
 
 def plan_prompt(run_dir, phase):
-    return (f"You are the light-orchestrator planner for the run in {run_dir}. Follow {SKILLS}/light-orchestrator-plan/SKILL.md exactly. "
-            f"The run is in phase {phase}. Use the light-orchestrator CLI (on PATH) for every state change. "
+    return (f"You are the lo planner for the run in {run_dir}. Follow {SKILLS}/lo-plan/SKILL.md exactly. "
+            f"The run is in phase {phase}. Use the lo CLI (on PATH) for every state change. "
             "Stop as soon as the run reaches awaiting-answers or awaiting-approval; never approve the plan yourself.")
 
 
@@ -960,23 +960,23 @@ def work_prompt(run_dir, task):
         repair = ("This is a repair. Fix every blocking finding below and do not redo passing work. "
                   f"Findings: {json.dumps(task.get('last_findings', []), ensure_ascii=False)} ")
     deps = task.get("dependencies") or {}
-    return (f"You are a light-orchestrator worker for task {task['claimed']} in the run at {run_dir}. "
-            f"Follow {SKILLS}/light-orchestrator-run/SKILL.md for the worker rules. Read brief.md and decisions.md if present; "
+    return (f"You are a lo worker for task {task['claimed']} in the run at {run_dir}. "
+            f"Follow {SKILLS}/lo-run/SKILL.md for the worker rules. Read brief.md and decisions.md if present; "
             f"consult plan.md and supporting context as needed. Inputs: {json.dumps(task.get('inputs', []))}. Task goal: {task['goal']} "
             f"done_when: {task['done_when']} Dependency outputs: {json.dumps(deps, ensure_ascii=False)} {repair}"
             f"Write your result inside {task['output_dir']}/ (write a temp file, then rename). "
             "Before repeating external publishing, check saved destination IDs and whether the write succeeded. "
-            "Do not run light-orchestrator. End your reply with one line: TASK_OUTPUT: <path relative to the run dir>.")
+            "Do not run lo. End your reply with one line: TASK_OUTPUT: <path relative to the run dir>.")
 
 
 def verify_prompt(run_dir, pending):
-    return (f"You are the independent light-orchestrator verifier for the run at {run_dir}. "
-            f"Follow {SKILLS}/light-orchestrator-verify/SKILL.md. Assess the combined result against brief.md and decisions.md. "
-            f"Pending tasks: {json.dumps(pending)}. Record verdicts with light-orchestrator verdict {run_dir} <id> pass|fail "
+    return (f"You are the independent lo verifier for the run at {run_dir}. "
+            f"Follow {SKILLS}/lo-verify/SKILL.md. Assess the combined result against brief.md and decisions.md. "
+            f"Pending tasks: {json.dumps(pending)}. Record verdicts with lo verdict {run_dir} <id> pass|fail "
             "--findings <file>. Review dependencies before their consumers. Refresh state after each verdict: "
             "a failure invalidates downstream outputs, which must not receive verdicts until rerun. "
             "At an intermediate checkpoint, assess the available work without claiming final acceptance. "
-            "Do not run light-orchestrator finish.")
+            "Do not run lo finish.")
 
 
 def block_failed_attempt(run_dir, task, reason):
@@ -1068,7 +1068,7 @@ def cmd_loop(args):
 
 
 def run_json(argv):
-    """Run a light-orchestrator command in-process (thread-safe, no stdout) and return its result or error."""
+    """Run a lo command in-process (thread-safe, no stdout) and return its result or error."""
     args = build_parser().parse_args(argv)
     try:
         return args.fn(args)
@@ -1077,7 +1077,7 @@ def run_json(argv):
 
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="light-orchestrator", description=__doc__.splitlines()[0])
+    p = argparse.ArgumentParser(prog="lo", description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("init", help="create a run directory")

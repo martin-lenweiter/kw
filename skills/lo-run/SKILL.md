@@ -1,18 +1,18 @@
 ---
-name: light-orchestrator-run
-description: Coordinate implementation of an approved light-orchestrator plan in phase executing. Claim work, delegate tasks, record outputs, record requirement changes, and handle repairs.
+name: lo-run
+description: Coordinate implementation of an approved lo plan in phase executing. Claim work, delegate tasks, record outputs, record requirement changes, and handle repairs.
 ---
 
 # Implement
 
-Change state only through the `light-orchestrator` CLI. Start with
-`light-orchestrator resume <run>` and `light-orchestrator status <run>`.
+Change state only through the `lo` CLI. Start with
+`lo resume <run>` and `lo status <run>`.
 Resume marks expired claims for attention; it does not stop old processes or
 show whether their external writes succeeded.
 
 ## Coordinate work
 
-1. `light-orchestrator claim <run> --owner <agent-id>` returns a task, its
+1. `lo claim <run> --owner <agent-id>` returns a task, its
    dependency outputs, an attempt token, and an output directory, or
    `claimed: null`.
 2. Give the worker the task, the relevant decisions, and pointers to inputs.
@@ -20,12 +20,12 @@ show whether their external writes succeeded.
 3. The worker writes its result to `out/<id>/<token>/result.md` (write a temp
    file, then rename) and links supporting evidence.
 4. Record completion with
-   `light-orchestrator done <run> <id> --token <token> --output out/<id>/<token>/result.md`
+   `lo done <run> <id> --token <token> --output out/<id>/<token>/result.md`
    and check that the command succeeded.
 
 Run independent tasks in parallel where it helps. Use the model and effort
 set on each task. When nothing is runnable and no workers remain, run
-`light-orchestrator phase <run> verifying` and hand over to an independent
+`lo phase <run> verifying` and hand over to an independent
 verifier.
 
 A claim lease lasts 30 minutes; for a longer task, run `resume` and claim
@@ -37,7 +37,7 @@ pattern match on the model name.
 ## Problems
 
 - If a worker cannot finish, record
-  `light-orchestrator block <run> <id> --token <token> --reason "<what is missing>"`
+  `lo block <run> <id> --token <token> --reason "<what is missing>"`
   instead of completing it. Do not invent results.
 - Inspect a failed process before a retry, and do not repeat the same failing
   approach.
@@ -50,7 +50,7 @@ When the user adds or changes something, record it in the run instead of
 remembering it. Write a JSON list of task specs: a new id adds a task, an
 existing id revises that task, and `{"id": "<id>", "drop": true}` removes one.
 Revise the acceptance task so it covers the change. Run
-`light-orchestrator amend <run> <file> --by <user> --note "<change>"` and add
+`lo amend <run> <file> --by <user> --note "<change>"` and add
 the change to `decisions.md`.
 
 The run reopens the revised tasks, their dependents, and the acceptance task;
@@ -59,6 +59,6 @@ If the change adds external writes, costs, or permissions beyond the approved
 plan, show it to the user before you record it.
 
 For a `needs-human` task, show the findings to the user. After an authorized
-fix, use `light-orchestrator resolve <run> <id> --note "<fix>"`. For a failed
+fix, use `lo resolve <run> <id> --note "<fix>"`. For a failed
 process that needs a new attempt, stop the old worker, check its external
-writes, then use `light-orchestrator resolve <run> <id> --retry --note "<reason>"`.
+writes, then use `lo resolve <run> <id> --retry --note "<reason>"`.
