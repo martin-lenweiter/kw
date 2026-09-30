@@ -46,9 +46,10 @@ Write `tasks.json`, for example:
   verified. Set `"checkpoint": "human"` when only the user can judge the
   result, for example a design or a blocked data source. The run pauses there
   for the user's verdict.
-- Set `model` and `effort` for each task. Use a large model for work that
-  needs judgment; implementers use a medium model, never a small one. The
-  planner, orchestrator, and verifier run on large models.
+- Set `model` and `effort` for each task. The planner, orchestrator, and
+  verifier use the most intelligent model available, as do tasks that need
+  hard judgment. Implementers use a capable mid-tier model, never the least
+  capable tier.
 - Declare shared surfaces in `uses` and their capacity with
   `lo init --resource <name>=<limit>` only where parallel
   tasks would conflict.
