@@ -1,6 +1,6 @@
 ---
 name: lo-run
-description: Coordinate implementation of an approved lo plan in phase executing. Claim work, delegate tasks, record outputs, record requirement changes, and handle repairs.
+description: Coordinate implementation of an approved lo (light-orchestrator) plan in phase executing. Claim work, delegate tasks, record outputs, record requirement changes, and handle repairs.
 ---
 
 # Implement
