@@ -83,7 +83,7 @@ def new_task(state, spec):
         "model": spec.get("model", "standard" if per_task else None),
         "effort": spec.get("effort"),
         "inputs": spec.get("inputs", []),
-        "checkpoint": bool(spec.get("checkpoint")),
+        "checkpoint": "human" if spec.get("checkpoint") == "human" else bool(spec.get("checkpoint")),
         "allow_partial_inputs": bool(spec.get("allow_partial_inputs", per_task)),
         "status": "todo",
         "attempts": 0,
@@ -361,6 +361,12 @@ def capacity_block(state, task):
     return None
 
 
+def awaiting_review(state, human):
+    """Completed tasks awaiting a verdict, from the user (human) or the verifier."""
+    return [t["id"] for t in state["tasks"].values()
+            if t["status"] == "done" and (t.get("checkpoint") == "human") == human]
+
+
 def next_action(state):
     """One-line instruction for whichever agent reads the run next."""
     p = state["phase"]
@@ -380,8 +386,12 @@ def next_action(state):
         return "orchestrator: all runnable tasks executed; move to verifying" + (
             f" ({blocked} task(s) wait for dependencies)" if blocked else "")
     if p == "verifying":
-        if c["done"]:
-            return f"verifier: {c['done']} task(s) awaiting verification"
+        agent, human = awaiting_review(state, False), awaiting_review(state, True)
+        if agent:
+            return f"verifier: {len(agent)} task(s) awaiting verification"
+        if human:
+            return (f"human: review {', '.join(human)}, then kw verdict <run> <id> pass, "
+                    "or fail --note \"what to change\"")
         return "verifier: kw finish (moves to executing for repairs, or done/partial)"
     return f"run is {p}"
 
@@ -535,6 +545,8 @@ def validate_specs(specs):
             raise KwError(f"duplicate task id {s['id']}")
         if not isinstance(s["id"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", s["id"]):
             raise KwError("task id must contain only letters, numbers, underscores and hyphens")
+        if s.get("checkpoint") not in (None, True, False, "human"):
+            raise KwError(f"task {s['id']} checkpoint must be true, false or \"human\"")
         for field in ("model", "effort"):
             if s.get(field) is not None and (not isinstance(s[field], str) or not s[field].strip()):
                 raise KwError(f"task {s['id']} {field} must be a nonempty string")
@@ -735,6 +747,10 @@ def cmd_verdict(args):
         if task["status"] != "done":
             raise KwError(f"task {args.id} is {task['status']}, not done")
         findings = read_findings(args.findings) if args.findings else []
+        if args.note:
+            findings.append({"key": f"review-{task['attempts']}",
+                             "severity": "blocking" if args.verdict == "fail" else "note",
+                             "text": args.note})
         blocking = [f for f in findings if f["severity"] == "blocking"]
         if args.verdict == "pass":
             if blocking:
@@ -1029,14 +1045,17 @@ def cmd_loop(args):
                 log.extend(ex.map(work, claims))
             continue
         if phase == "verifying":
-            pending = [t["id"] for t in state["tasks"].values() if t["status"] == "done"]
+            pending = awaiting_review(state, False)
             if pending:
                 code, _, lg = agent_call(cfg, run_dir, "verify", args.model,
                                          verify_prompt(run_dir, pending), args.timeout, args.effort)
                 log.append({"role": "verifier", "tasks": pending, "exit": code, "log": str(lg)})
-                left = [t["id"] for t in status_of(run_dir)["tasks"].values() if t["status"] == "done"]
+                left = awaiting_review(status_of(run_dir), False)
                 if code != 0 or left:
                     return {"stopped": phase, "error": f"verifier exit {code}; tasks without verdict: {left}", "steps": log}
+            state = status_of(run_dir)
+            if awaiting_review(state, True):
+                return {"stopped": "awaiting-review", "next": next_action(state), "steps": log}
             r = run_json(["finish", str(run_dir)])
             log.append({"role": "orchestrator", "finish": r})
             if "error" in r:
@@ -1127,6 +1146,7 @@ def build_parser():
     s.add_argument("id")
     s.add_argument("verdict", choices=["pass", "fail"])
     s.add_argument("--findings", help="JSON list of {key, severity, text}")
+    s.add_argument("--note", help="one finding as text: blocking with fail, a note with pass")
     s.set_defaults(fn=cmd_verdict)
 
     s = sub.add_parser("finish", help="close a verify round")

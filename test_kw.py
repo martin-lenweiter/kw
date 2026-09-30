@@ -445,6 +445,28 @@ class KwTest(unittest.TestCase):
         self.execute_all()
         self.assertEqual(self.pass_all_done()["phase"], "done")
 
+    def test_human_checkpoint_waits_for_user_verdict(self):
+        self.global_plan(checkpoint="human")
+        self.execute_all()
+        self.assertIn("human: review source", run_kw("status", self.run_dir)[1]["next"])
+        run_kw("verdict", self.run_dir, "source", "fail", "--note", "make it simpler")
+        task = kw.status_of(self.run_dir)["tasks"]["source"]
+        self.assertEqual((task["status"], task["last_findings"][0]["text"]), ("todo", "make it simpler"))
+        self.assertEqual(run_kw("finish", self.run_dir)[1]["phase"], "executing")
+        self.execute_all()
+        self.assertEqual(kw.status_of(self.run_dir)["tasks"]["result"]["status"], "todo")
+        run_kw("verdict", self.run_dir, "source", "pass", "--note", "looks good")
+        self.assertEqual(run_kw("finish", self.run_dir)[1]["phase"], "executing")
+        self.execute_all()
+        self.assertEqual(self.pass_all_done()["phase"], "done")
+
+    def test_checkpoint_value_is_validated(self):
+        run_kw("init", self.run_dir)
+        run_kw("phase", self.run_dir, "planning")
+        tasks = [{"id": "a", "goal": "g", "done_when": "d", "checkpoint": "maybe", "acceptance": True}]
+        code = run_kw("tasks", "set", self.run_dir, self.write("tasks.json", tasks), check=False)[0]
+        self.assertNotEqual(code, 0)
+
     def test_repair_invalidates_already_verified_consumer(self):
         self.global_plan()
         self.execute_all()
@@ -563,6 +585,20 @@ class KwTest(unittest.TestCase):
         self.assertEqual(t1["attempts"], 1)  # one repair after the fake verifier failed it
         self.assertEqual((self.run_dir / "out" / "t1.calls").read_text().split(), ["m-fast", "m-fast"])
         self.assertEqual((self.run_dir / "out" / "acc.calls").read_text().split(), ["m-strong", "m-strong"])
+
+    def test_loop_stops_for_human_review(self):
+        run_kw("init", self.run_dir)
+        fake = Path(__file__).with_name("tests_fake_agent.py")
+        (self.run_dir / "kw-loop.json").write_text(json.dumps({"fake": {
+            "cmd": [sys.executable, str(fake), "{model}", "{prompt}"], "models": {}}}))
+        with patch.dict(os.environ, {"FAKE_HUMAN_CHECKPOINT": "t2"}):
+            run_kw("loop", self.run_dir, "--harness", "fake")
+            run_kw("approve", self.run_dir)
+            _, r = run_kw("loop", self.run_dir, "--harness", "fake")
+        self.assertEqual(r["stopped"], "awaiting-review", r)
+        self.assertIn("human: review t2", r["next"])
+        tasks = kw.status_of(self.run_dir)["tasks"]
+        self.assertEqual((tasks["t2"]["status"], tasks["acc"]["status"]), ("done", "todo"))
 
 
 if __name__ == "__main__":

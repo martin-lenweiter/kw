@@ -14,7 +14,8 @@ if "kw planner" in prompt:
     if phase == "clarifying":
         kw("phase", str(run), "planning")
     tasks = [{"id": "t1", "goal": "g1", "done_when": "file says ok", "model": "fast"},
-             {"id": "t2", "goal": "g2", "done_when": "file says ok"},
+             {"id": "t2", "goal": "g2", "done_when": "file says ok",
+              "checkpoint": "human" if os.environ.get("FAKE_HUMAN_CHECKPOINT") == "t2" else False},
              {"id": "acc", "goal": "check all", "done_when": "both ok", "depends_on": ["t1", "t2"],
               "acceptance": True, "model": "strong"}]
     (run / "tasks.json").write_text(json.dumps(tasks))
@@ -35,7 +36,8 @@ elif "kw verifier" in prompt:
     # Refresh after each verdict: failing an input invalidates completed consumers.
     while True:
         state = json.loads((run / "state.json").read_text())
-        pending = [tid for tid in state["order"] if state["tasks"][tid]["status"] == "done"]
+        listed = json.loads(re.search(r"Pending tasks: (\[.*?\])", prompt).group(1))
+        pending = [tid for tid in listed if state["tasks"][tid]["status"] == "done"]
         if not pending:
             break
         tid = pending[0]
