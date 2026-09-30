@@ -1,10 +1,10 @@
 #!/usr/bin/env python3
-"""kw: run state for plan -> execute -> verify agent workflows.
+"""light-orchestrator: run state for plan -> execute -> verify agent workflows.
 
 All state lives in one run directory. ledger.jsonl is the append-only source
 of truth; state.json is a snapshot rebuilt from it on demand. Every command
 takes an exclusive lock, validates the transition, appends one event, and
-rewrites the snapshot atomically. Agents must change state only through kw.
+rewrites the snapshot atomically. Agents must change state only through light-orchestrator.
 """
 
 import argparse
@@ -38,13 +38,13 @@ PHASES = {
     "executing": {"verifying"},
     "verifying": {"executing", "done", "partial"},
     "done": set(),
-    "partial": {"verifying"},  # only through kw resolve
+    "partial": {"verifying"},  # only through light-orchestrator resolve
 }
 TASK_STATUSES = {"todo", "running", "done", "verified", "needs-human"}
 TERMINAL = {"verified", "needs-human"}
 
 
-class KwError(Exception):
+class OrchestratorError(Exception):
     pass
 
 
@@ -176,7 +176,7 @@ def apply(state, ev):
             tasks[tid]["status"] = "needs-human"
             tasks[tid]["stop_reason"] = ev["reason"]
     else:
-        raise KwError(f"unknown event type {t}")
+        raise OrchestratorError(f"unknown event type {t}")
     state["events"] += 1
     return state
 
@@ -192,7 +192,7 @@ class Run:
     @contextlib.contextmanager
     def locked(self):
         if not self.dir.is_dir():
-            raise KwError(f"no run directory: {self.dir}")
+            raise OrchestratorError(f"no run directory: {self.dir}")
         with open(self.dir / LOCK, "a") as fh:
             fcntl.flock(fh, fcntl.LOCK_EX)
             try:
@@ -212,10 +212,10 @@ class Run:
                 try:
                     event = json.loads(line)
                     if not isinstance(event, dict) or "type" not in event:
-                        raise KwError(f"invalid ledger record at line {number}")
+                        raise OrchestratorError(f"invalid ledger record at line {number}")
                     out.append(event)
                 except json.JSONDecodeError as exc:
-                    raise KwError(f"corrupt ledger at line {number}: {exc.msg}") from exc
+                    raise OrchestratorError(f"corrupt ledger at line {number}: {exc.msg}") from exc
         return out
 
     def rebuild(self):
@@ -224,7 +224,7 @@ class Run:
             try:
                 apply(state, ev)
             except (KeyError, TypeError, ValueError) as exc:
-                raise KwError(f"invalid ledger event {state['events'] + 1}: {exc}") from exc
+                raise OrchestratorError(f"invalid ledger event {state['events'] + 1}: {exc}") from exc
         return state
 
     def load(self):
@@ -257,12 +257,12 @@ class Run:
 
 def require_phase(state, *phases):
     if state["phase"] not in phases:
-        raise KwError(f"phase is {state['phase']}; expected one of {', '.join(phases)}")
+        raise OrchestratorError(f"phase is {state['phase']}; expected one of {', '.join(phases)}")
 
 
 def get_task(state, tid):
     if tid not in state["tasks"]:
-        raise KwError(f"unknown task {tid}")
+        raise OrchestratorError(f"unknown task {tid}")
     return state["tasks"][tid]
 
 
@@ -315,7 +315,7 @@ def settle_blocked(run, state):
 
 
 def write_report(run, state):
-    lines = [f"# {state.get('title', 'KW run')}", "", f"Status: {state['phase']}", ""]
+    lines = [f"# {state.get('title', 'Run')}", "", f"Status: {state['phase']}", ""]
     for tid in state["order"]:
         task = state["tasks"][tid]
         lines.append(f"- {tid}: {task['status']} — {task['goal']}")
@@ -376,9 +376,9 @@ def next_action(state):
     if p == "awaiting-answers":
         return "human: answer questions.md, then planner moves to clarifying or planning"
     if p == "planning":
-        return "planner: write plan.md and tasks.json, kw tasks set, then move to awaiting-approval"
+        return "planner: write plan.md and tasks.json, light-orchestrator tasks set, then move to awaiting-approval"
     if p == "awaiting-approval":
-        return "human: review plan.md, then kw approve (or move back to planning)"
+        return "human: review plan.md, then light-orchestrator approve (or move back to planning)"
     if p == "executing":
         blocked = len(blocked_todo(state))
         if c["todo"] - blocked or c["running"]:
@@ -390,9 +390,9 @@ def next_action(state):
         if agent:
             return f"verifier: {len(agent)} task(s) awaiting verification"
         if human:
-            return (f"human: review {', '.join(human)}, then kw verdict <run> <id> pass, "
+            return (f"human: review {', '.join(human)}, then light-orchestrator verdict <run> <id> pass, "
                     "or fail --note \"what to change\"")
-        return "verifier: kw finish (moves to executing for repairs, or done/partial)"
+        return "verifier: light-orchestrator finish (moves to executing for repairs, or done/partial)"
     return f"run is {p}"
 
 
@@ -407,7 +407,7 @@ def expire_leases(run, state):
 def cmd_init(args):
     d = Path(args.run)
     if (d / LEDGER).exists():
-        raise KwError(f"run already exists: {d}")
+        raise OrchestratorError(f"run already exists: {d}")
     d.mkdir(parents=True, exist_ok=True)
     (d / "out").mkdir(exist_ok=True)
     if args.brief:
@@ -419,7 +419,7 @@ def cmd_init(args):
     for item in args.resource or []:
         name, _, cap = item.partition("=")
         if not name or not cap.isdigit() or int(cap) < 1:
-            raise KwError(f"--resource needs name=capacity (capacity >= 1): {item}")
+            raise OrchestratorError(f"--resource needs name=capacity (capacity >= 1): {item}")
         resources[name] = int(cap)
     config["resources"] = resources
     config["verification"] = args.verification
@@ -470,7 +470,7 @@ def render_graph(state, width=60):
     summary = [f"{c['verified']}/{len(tasks)} verified"]
     summary += [f"{c[s]} {label}" for s, label in (("running", "running"), ("done", "awaiting verification"),
                                                    ("needs-human", "need human")) if c[s]]
-    lines = [f"{state.get('title') or 'KW run'} · round {state['round']}", "",
+    lines = [f"{state.get('title') or 'Run'} · round {state['round']}", "",
              " > ".join(stages), ""]
     if tasks:
         lines += [" · ".join(summary), ""]
@@ -514,18 +514,18 @@ def cmd_phase(args):
         state = run.load()
         cur, to = state["phase"], args.to
         if to not in PHASES.get(cur, set()):
-            raise KwError(f"cannot move {cur} -> {to}")
+            raise OrchestratorError(f"cannot move {cur} -> {to}")
         if to == "executing" and cur == "awaiting-approval":
-            raise KwError("use kw approve to start execution")
+            raise OrchestratorError("use light-orchestrator approve to start execution")
         if to == "verifying":
             waiting = set(blocked_todo(state))
             if any(t["status"] == "running" or (t["status"] == "todo" and t["id"] not in waiting)
                    for t in state["tasks"].values()):
-                raise KwError("tasks still todo or running")
+                raise OrchestratorError("tasks still todo or running")
         if to == "awaiting-approval" and not state["tasks"]:
-            raise KwError("no tasks set")
+            raise OrchestratorError("no tasks set")
         if cur == "verifying":
-            raise KwError("use kw finish to leave verifying")
+            raise OrchestratorError("use light-orchestrator finish to leave verifying")
         run.append(state, {"type": "phase", "from": cur, "to": to})
     return {"phase": to}
 
@@ -540,21 +540,21 @@ def validate_specs(specs):
     for s in specs:
         for key in ("id", "goal", "done_when"):
             if not s.get(key):
-                raise KwError(f"task missing {key}: {s}")
+                raise OrchestratorError(f"task missing {key}: {s}")
         if s["id"] in seen:
-            raise KwError(f"duplicate task id {s['id']}")
+            raise OrchestratorError(f"duplicate task id {s['id']}")
         if not isinstance(s["id"], str) or not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_-]*", s["id"]):
-            raise KwError("task id must contain only letters, numbers, underscores and hyphens")
+            raise OrchestratorError("task id must contain only letters, numbers, underscores and hyphens")
         if s.get("checkpoint") not in (None, True, False, "human"):
-            raise KwError(f"task {s['id']} checkpoint must be true, false or \"human\"")
+            raise OrchestratorError(f"task {s['id']} checkpoint must be true, false or \"human\"")
         for field in ("model", "effort"):
             if s.get(field) is not None and (not isinstance(s[field], str) or not s[field].strip()):
-                raise KwError(f"task {s['id']} {field} must be a nonempty string")
+                raise OrchestratorError(f"task {s['id']} {field} must be a nonempty string")
         seen.add(s["id"])
     for s in specs:
         for d in s.get("depends_on", []):
             if d not in seen or d == s["id"]:
-                raise KwError(f"task {s['id']} has invalid dependency {d}")
+                raise OrchestratorError(f"task {s['id']} has invalid dependency {d}")
     deps = {s["id"]: s.get("depends_on", []) for s in specs}
     visiting, done = set(), set()
 
@@ -562,7 +562,7 @@ def validate_specs(specs):
         if tid in done:
             return
         if tid in visiting:
-            raise KwError(f"dependency cycle at {tid}")
+            raise OrchestratorError(f"dependency cycle at {tid}")
         visiting.add(tid)
         for d in deps[tid]:
             visit(d)
@@ -576,7 +576,7 @@ def validate_specs(specs):
     # it must (transitively) depend on every other task.
     accept = [s["id"] for s in specs if s.get("acceptance")]
     if len(accept) != 1:
-        raise KwError("plan needs exactly one task with \"acceptance\": true")
+        raise OrchestratorError("plan needs exactly one task with \"acceptance\": true")
 
     def upstream(tid, acc):
         for d in deps[tid]:
@@ -587,7 +587,7 @@ def validate_specs(specs):
 
     missing = set(deps) - {accept[0]} - upstream(accept[0], set())
     if missing:
-        raise KwError(f"acceptance task {accept[0]} must depend on: {', '.join(sorted(missing))}")
+        raise OrchestratorError(f"acceptance task {accept[0]} must depend on: {', '.join(sorted(missing))}")
 
 
 def cmd_tasks_set(args):
@@ -598,7 +598,7 @@ def cmd_tasks_set(args):
         state = run.load()
         require_phase(state, "planning")
         if state["plan_approved"]:
-            raise KwError("plan is approved and frozen")
+            raise OrchestratorError("plan is approved and frozen")
         run.append(state, {"type": "tasks-set", "tasks": specs})
     return {"tasks": len(specs)}
 
@@ -607,10 +607,10 @@ def cmd_amend(args):
     """Record an approved requirement change: add, revise, or drop tasks."""
     specs = read_specs(args.file)
     if not specs:
-        raise KwError("amendment has no tasks")
+        raise OrchestratorError("amendment has no tasks")
     ids = [c.get("id") for c in specs]
     if len(ids) != len(set(ids)):
-        raise KwError("amendment lists a task id more than once")
+        raise OrchestratorError("amendment lists a task id more than once")
     drops = [c["id"] for c in specs if c.get("drop")]
     changes = [c for c in specs if not c.get("drop")]
     run = Run(args.run)
@@ -620,7 +620,7 @@ def cmd_amend(args):
         tasks = state["tasks"]
         unknown = [tid for tid in drops if tid not in tasks]
         if unknown:
-            raise KwError(f"cannot drop unknown task {', '.join(unknown)}")
+            raise OrchestratorError(f"cannot drop unknown task {', '.join(unknown)}")
         merged = []
         for c in changes:
             base = tasks.get(c.get("id"))
@@ -642,7 +642,7 @@ def cmd_amend(args):
                     changed = True
         busy = sorted(tid for tid in affected | set(drops) if tid in tasks and tasks[tid]["status"] == "running")
         if busy:
-            raise KwError(f"stop the workers on {', '.join(busy)} before amending them")
+            raise OrchestratorError(f"stop the workers on {', '.join(busy)} before amending them")
         run.append(state, {"type": "amend", "tasks": merged, "drop": drops, "by": args.by, "note": args.note})
         reopened = [tid for tid in state["order"] if tid in affected]
     return {"phase": state["phase"], "amendment": len(state["amendments"]),
@@ -675,7 +675,7 @@ def cmd_claim(args):
                     continue
                 lease = args.lease or state["config"]["lease_seconds"]
                 if lease <= 0:
-                    raise KwError("lease must be positive")
+                    raise OrchestratorError("lease must be positive")
                 token = uuid.uuid4().hex
                 output_dir = f"out/{tid}/{token}"
                 (run.dir / output_dir).mkdir(parents=True, exist_ok=True)
@@ -700,17 +700,17 @@ def cmd_done(args):
         require_phase(state, "executing")
         task = get_task(state, args.id)
         if task["status"] != "running":
-            raise KwError(f"task {args.id} is {task['status']}, not running")
+            raise OrchestratorError(f"task {args.id} is {task['status']}, not running")
         if task.get("token"):
             if args.token != task["token"] or task["lease_until"] <= now():
-                raise KwError("claim token does not match or lease expired")
+                raise OrchestratorError("claim token does not match or lease expired")
             if not args.output:
-                raise KwError("output required")
+                raise OrchestratorError("output required")
             target = (run.dir / args.output).resolve()
             if not target.is_relative_to((run.dir / task["output_dir"]).resolve()):
-                raise KwError("output must be within the current attempt output_dir")
+                raise OrchestratorError("output must be within the current attempt output_dir")
         if args.output and not (run.dir / args.output).is_file():
-            raise KwError(f"output not found: {args.output}")
+            raise OrchestratorError(f"output not found: {args.output}")
         run.append(state, {"type": "done", "id": args.id, "output": args.output})
     return {"id": args.id, "status": "done"}
 
@@ -723,7 +723,7 @@ def cmd_block(args):
         require_phase(state, "executing")
         task = get_task(state, args.id)
         if task["status"] != "running" or task.get("token") != args.token:
-            raise KwError("block requires the active claim token")
+            raise OrchestratorError("block requires the active claim token")
         run.append(state, {"type": "escalate", "ids": [args.id], "reason": args.reason})
     return {"id": args.id, "status": "needs-human"}
 
@@ -734,7 +734,7 @@ def read_findings(path):
         findings = findings.get("findings", [])
     for f in findings:
         if f.get("severity") not in ("blocking", "note") or not f.get("key") or not f.get("text"):
-            raise KwError(f"finding needs key, severity (blocking|note) and text: {f}")
+            raise OrchestratorError(f"finding needs key, severity (blocking|note) and text: {f}")
     return findings
 
 
@@ -745,7 +745,7 @@ def cmd_verdict(args):
         require_phase(state, "verifying")
         task = get_task(state, args.id)
         if task["status"] != "done":
-            raise KwError(f"task {args.id} is {task['status']}, not done")
+            raise OrchestratorError(f"task {args.id} is {task['status']}, not done")
         findings = read_findings(args.findings) if args.findings else []
         if args.note:
             findings.append({"key": f"review-{task['attempts']}",
@@ -754,11 +754,11 @@ def cmd_verdict(args):
         blocking = [f for f in findings if f["severity"] == "blocking"]
         if args.verdict == "pass":
             if blocking:
-                raise KwError("pass given with blocking findings")
+                raise OrchestratorError("pass given with blocking findings")
             run.append(state, {"type": "pass", "id": args.id, "notes": findings})
             return {"id": args.id, "status": "verified"}
         if not blocking:
-            raise KwError("fail needs at least one blocking finding")
+            raise OrchestratorError("fail needs at least one blocking finding")
         cfg = state["config"]
         previous = {f["key"] for f in task["last_findings"] if f["severity"] == "blocking"}
         repeated = sorted(previous & {f["key"] for f in blocking})
@@ -780,10 +780,12 @@ def cmd_finish(args):
         state = run.load()
         require_phase(state, "verifying")
         c = counts(state)
-        if c["done"]:
-            raise KwError(f"{c['done']} task(s) still await a verdict")
+        if awaiting_review(state, False):
+            raise OrchestratorError(f"{c['done']} task(s) still await a verdict")
+        if awaiting_review(state, True):
+            raise OrchestratorError(next_action(state))
         if c["running"]:
-            raise KwError("tasks still running")
+            raise OrchestratorError("tasks still running")
         settle_blocked(run, state)
         if counts(state)["todo"]:
             repairs = [t["id"] for t in state["tasks"].values() if t["status"] == "todo" and t["attempts"]]
@@ -818,17 +820,17 @@ def cmd_resolve(args):
         state = run.load()
         task = get_task(state, args.id)
         if task["status"] != "needs-human":
-            raise KwError(f"task {args.id} is {task['status']}, not needs-human")
+            raise OrchestratorError(f"task {args.id} is {task['status']}, not needs-human")
         if state["phase"] not in ("executing", "verifying", "partial"):
-            raise KwError(f"cannot resolve in phase {state['phase']}")
+            raise OrchestratorError(f"cannot resolve in phase {state['phase']}")
         if any(t["status"] == "running" for t in state["tasks"].values()):
-            raise KwError("tasks still running")
+            raise OrchestratorError("tasks still running")
         if args.output and not (run.dir / args.output).is_file():
-            raise KwError(f"output not found: {args.output}")
+            raise OrchestratorError(f"output not found: {args.output}")
         if args.retry and args.output:
-            raise KwError("--retry cannot be combined with --output")
+            raise OrchestratorError("--retry cannot be combined with --output")
         if not args.retry and not (args.output or task.get("output")):
-            raise KwError("provide repaired --output or use --retry after stopping the old worker")
+            raise OrchestratorError("provide repaired --output or use --retry after stopping the old worker")
         run.append(state, {"type": "resolve", "id": args.id, "note": args.note,
                            "by": args.by, "output": args.output, "retry": args.retry})
     return {"id": args.id, "status": task["status"], "phase": state["phase"]}
@@ -861,7 +863,7 @@ def cmd_rebuild(args):
 
 
 # ---------------------------------------------------------------------- loop
-# kw loop drives a run headlessly through any CLI agent harness. It never
+# The loop drives a run headlessly through any CLI agent harness. It never
 # decides for the human: it stops at awaiting-answers and awaiting-approval.
 
 SKILLS = Path(__file__).resolve().parent / "skills"
@@ -881,16 +883,16 @@ HARNESSES = {
 
 
 def loop_config(run_dir, harness):
-    """Harness template, overridable per run in <run>/kw-loop.json."""
+    """Harness template, overridable per run in <run>/loop.json."""
     cfg = json.loads(json.dumps(HARNESSES[harness])) if harness in HARNESSES else {"cmd": [], "models": {}}
-    path = Path(run_dir) / "kw-loop.json"
+    path = Path(run_dir) / "loop.json"
     if path.exists():
         override = json.loads(path.read_text()).get(harness, {})
         cfg.update(override)
         if "cmd" in override:
             cfg.pop("native", None)
     if not cfg.get("cmd"):
-        raise KwError(f"no command template for harness {harness}")
+        raise OrchestratorError(f"no command template for harness {harness}")
     return cfg
 
 
@@ -934,7 +936,7 @@ def agent_call(cfg, run_dir, name, model_tier, prompt, timeout, effort=None):
             code = 127
     output = None
     for line in reversed(log.read_text().splitlines()):
-        if line.strip().startswith("KW_OUTPUT:"):
+        if line.strip().startswith("TASK_OUTPUT:"):
             output = line.split(":", 1)[1].strip()
             break
     return code, output, log
@@ -947,8 +949,8 @@ def status_of(run_dir):
 
 
 def plan_prompt(run_dir, phase):
-    return (f"You are the kw planner for the run in {run_dir}. Follow {SKILLS}/kw-plan/SKILL.md exactly. "
-            f"The run is in phase {phase}. Use the kw CLI (on PATH as kw) for every state change. "
+    return (f"You are the light-orchestrator planner for the run in {run_dir}. Follow {SKILLS}/light-orchestrator-plan/SKILL.md exactly. "
+            f"The run is in phase {phase}. Use the light-orchestrator CLI (on PATH) for every state change. "
             "Stop as soon as the run reaches awaiting-answers or awaiting-approval; never approve the plan yourself.")
 
 
@@ -958,23 +960,23 @@ def work_prompt(run_dir, task):
         repair = ("This is a repair. Fix every blocking finding below and do not redo passing work. "
                   f"Findings: {json.dumps(task.get('last_findings', []), ensure_ascii=False)} ")
     deps = task.get("dependencies") or {}
-    return (f"You are a kw worker for task {task['claimed']} in the run at {run_dir}. "
-            f"Follow {SKILLS}/kw-run/SKILL.md for the worker rules. Read brief.md and decisions.md if present; "
+    return (f"You are a light-orchestrator worker for task {task['claimed']} in the run at {run_dir}. "
+            f"Follow {SKILLS}/light-orchestrator-run/SKILL.md for the worker rules. Read brief.md and decisions.md if present; "
             f"consult plan.md and supporting context as needed. Inputs: {json.dumps(task.get('inputs', []))}. Task goal: {task['goal']} "
             f"done_when: {task['done_when']} Dependency outputs: {json.dumps(deps, ensure_ascii=False)} {repair}"
             f"Write your result inside {task['output_dir']}/ (write a temp file, then rename). "
             "Before repeating external publishing, check saved destination IDs and whether the write succeeded. "
-            "Do not run kw. End your reply with one line: KW_OUTPUT: <path relative to the run dir>.")
+            "Do not run light-orchestrator. End your reply with one line: TASK_OUTPUT: <path relative to the run dir>.")
 
 
 def verify_prompt(run_dir, pending):
-    return (f"You are the independent kw verifier for the run at {run_dir}. "
-            f"Follow {SKILLS}/kw-verify/SKILL.md. Assess the combined result against brief.md and decisions.md. "
-            f"Pending tasks: {json.dumps(pending)}. Record verdicts with kw verdict {run_dir} <id> pass|fail "
+    return (f"You are the independent light-orchestrator verifier for the run at {run_dir}. "
+            f"Follow {SKILLS}/light-orchestrator-verify/SKILL.md. Assess the combined result against brief.md and decisions.md. "
+            f"Pending tasks: {json.dumps(pending)}. Record verdicts with light-orchestrator verdict {run_dir} <id> pass|fail "
             "--findings <file>. Review dependencies before their consumers. Refresh state after each verdict: "
             "a failure invalidates downstream outputs, which must not receive verdicts until rerun. "
             "At an intermediate checkpoint, assess the available work without claiming final acceptance. "
-            "Do not run kw finish.")
+            "Do not run light-orchestrator finish.")
 
 
 def block_failed_attempt(run_dir, task, reason):
@@ -990,7 +992,7 @@ def cmd_loop(args):
     run_dir = Path(args.run).resolve()
     cfg = loop_config(run_dir, args.harness)
     if args.timeout <= 0:
-        raise KwError("timeout must be positive")
+        raise OrchestratorError("timeout must be positive")
     log = []
     for _ in range(args.max_steps):
         state = status_of(run_dir)
@@ -1013,7 +1015,7 @@ def cmd_loop(args):
                 return {"stopped": phase, **result, "steps": log}
             claims = []
             while True:
-                r = run_json(["claim", str(run_dir), "--owner", f"kw-loop-{args.harness}",
+                r = run_json(["claim", str(run_dir), "--owner", f"loop-{args.harness}",
                               "--lease", str(args.timeout + 60)])
                 if "error" in r:
                     return {"stopped": phase, **r, "steps": log}
@@ -1066,16 +1068,16 @@ def cmd_loop(args):
 
 
 def run_json(argv):
-    """Run a kw command in-process (thread-safe, no stdout) and return its result or error."""
+    """Run a light-orchestrator command in-process (thread-safe, no stdout) and return its result or error."""
     args = build_parser().parse_args(argv)
     try:
         return args.fn(args)
-    except KwError as e:
+    except OrchestratorError as e:
         return {"error": str(e)}
 
 
 def build_parser():
-    p = argparse.ArgumentParser(prog="kw", description=__doc__.splitlines()[0])
+    p = argparse.ArgumentParser(prog="light-orchestrator", description=__doc__.splitlines()[0])
     sub = p.add_subparsers(dest="cmd", required=True)
 
     s = sub.add_parser("init", help="create a run directory")
@@ -1173,7 +1175,7 @@ def build_parser():
 
     s = sub.add_parser("loop", help="drive the run headlessly through a CLI agent harness")
     s.add_argument("run")
-    s.add_argument("--harness", default="claude", help="claude, codex, or a name defined in <run>/kw-loop.json")
+    s.add_argument("--harness", default="claude", help="claude, codex, or a name defined in <run>/loop.json")
     s.add_argument("--model", help="model for planner/verifier and workers without an override; native default if omitted")
     s.add_argument("--effort", help="reasoning effort, independent of model")
     s.add_argument("--timeout", type=int, default=3600, help="seconds per agent call")
@@ -1186,7 +1188,7 @@ def main(argv=None):
     args = build_parser().parse_args(argv)
     try:
         result = args.fn(args)
-    except KwError as e:
+    except OrchestratorError as e:
         print(json.dumps({"error": str(e)}), file=sys.stderr)
         return 2
     print(result if isinstance(result, str) else json.dumps(result, indent=2, ensure_ascii=False))

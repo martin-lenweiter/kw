@@ -9,9 +9,9 @@ from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-import kw
+import light_orchestrator as lo
 
-KW = [sys.executable, str(Path(__file__).with_name("kw.py"))]
+KW = [sys.executable, str(Path(__file__).with_name("light_orchestrator.py"))]
 
 
 def run_kw(*args, check=True):
@@ -62,7 +62,7 @@ class KwTest(unittest.TestCase):
         self.assertTrue(any(l.startswith("L1  [.] t3") and "<- t1, t2" in l for l in lines))
 
     def complete(self, tid):
-        task = kw.status_of(self.run_dir)["tasks"][tid]
+        task = lo.status_of(self.run_dir)["tasks"][tid]
         out = Path("out") / tid / task["token"] / "result.md"
         (self.run_dir / out).parent.mkdir(parents=True, exist_ok=True)
         (self.run_dir / out).write_text("result")
@@ -227,7 +227,7 @@ class KwTest(unittest.TestCase):
         self.assertEqual(code, 2)  # acceptance must cover the new task
         _, r = run_kw("amend", self.run_dir, self.write("a.json", change), "--note", "Martin: add soft cut")
         self.assertEqual((r["phase"], r["added"], r["reopened"]), ("executing", ["t4"], ["t3", "t4"]))
-        tasks = kw.status_of(self.run_dir)["tasks"]
+        tasks = lo.status_of(self.run_dir)["tasks"]
         self.assertEqual([tasks[t]["status"] for t in ("t1", "t2", "t3", "t4")],
                          ["verified", "verified", "todo", "todo"])
         self.assertEqual((tasks["t3"]["goal"], tasks["t3"]["done_when"]), ("goal 3", "includes soft cut"))
@@ -248,7 +248,7 @@ class KwTest(unittest.TestCase):
         self.pass_all_done()
         _, r = run_kw("amend", self.run_dir, self.write("a.json", [{"id": "r1", "goal": "new scope"}]), "--note", "n")
         self.assertEqual(r["reopened"], ["r1", "p1", "c1"])
-        tasks = kw.status_of(self.run_dir)["tasks"]
+        tasks = lo.status_of(self.run_dir)["tasks"]
         self.assertEqual((tasks["r1"]["attempts"], len(tasks["r1"]["history"])), (0, 1))
         self.assertEqual(tasks["r2"]["status"], "verified")
         self.assertEqual(self.finish_all()["phase"], "done")
@@ -276,7 +276,7 @@ class KwTest(unittest.TestCase):
         change = [{"id": "t2", "drop": True}, {"id": "t3", "depends_on": ["t1"]}]
         _, r = run_kw("amend", self.run_dir, self.write("a.json", change), "--by", "martin", "--note", "Martin: skip Attio")
         self.assertEqual((r["dropped"], r["reopened"]), (["t2"], ["t3"]))
-        self.assertNotIn("t2", kw.status_of(self.run_dir)["tasks"])
+        self.assertNotIn("t2", lo.status_of(self.run_dir)["tasks"])
         self.assertEqual(self.finish_all()["phase"], "done")
         report = (self.run_dir / "report.md").read_text()
         self.assertIn("Martin: skip Attio", report)
@@ -427,7 +427,7 @@ class KwTest(unittest.TestCase):
     def test_global_default_executes_chain_before_verification(self):
         self.global_plan()
         self.execute_all()
-        self.assertEqual([t["status"] for t in kw.status_of(self.run_dir)["tasks"].values()], ["done", "done"])
+        self.assertEqual([t["status"] for t in lo.status_of(self.run_dir)["tasks"].values()], ["done", "done"])
         result = self.pass_all_done()
         self.assertEqual(result["phase"], "done")
         report = self.run_dir / "report.md"
@@ -439,7 +439,7 @@ class KwTest(unittest.TestCase):
     def test_checkpoint_waits_for_independent_verification(self):
         self.global_plan(checkpoint=True)
         self.execute_all()
-        self.assertEqual([t["status"] for t in kw.status_of(self.run_dir)["tasks"].values()], ["done", "todo"])
+        self.assertEqual([t["status"] for t in lo.status_of(self.run_dir)["tasks"].values()], ["done", "todo"])
         run_kw("verdict", self.run_dir, "source", "pass")
         self.assertEqual(run_kw("finish", self.run_dir)[1]["phase"], "executing")
         self.execute_all()
@@ -450,11 +450,11 @@ class KwTest(unittest.TestCase):
         self.execute_all()
         self.assertIn("human: review source", run_kw("status", self.run_dir)[1]["next"])
         run_kw("verdict", self.run_dir, "source", "fail", "--note", "make it simpler")
-        task = kw.status_of(self.run_dir)["tasks"]["source"]
+        task = lo.status_of(self.run_dir)["tasks"]["source"]
         self.assertEqual((task["status"], task["last_findings"][0]["text"]), ("todo", "make it simpler"))
         self.assertEqual(run_kw("finish", self.run_dir)[1]["phase"], "executing")
         self.execute_all()
-        self.assertEqual(kw.status_of(self.run_dir)["tasks"]["result"]["status"], "todo")
+        self.assertEqual(lo.status_of(self.run_dir)["tasks"]["result"]["status"], "todo")
         run_kw("verdict", self.run_dir, "source", "pass", "--note", "looks good")
         self.assertEqual(run_kw("finish", self.run_dir)[1]["phase"], "executing")
         self.execute_all()
@@ -472,7 +472,7 @@ class KwTest(unittest.TestCase):
         self.execute_all()
         run_kw("verdict", self.run_dir, "result", "pass")
         run_kw("verdict", self.run_dir, "source", "fail", "--findings", self.findings("incorrect"))
-        self.assertEqual(kw.status_of(self.run_dir)["tasks"]["result"]["status"], "todo")
+        self.assertEqual(lo.status_of(self.run_dir)["tasks"]["result"]["status"], "todo")
         run_kw("finish", self.run_dir)
         self.execute_all()
         self.assertEqual(self.pass_all_done()["phase"], "done")
@@ -482,7 +482,7 @@ class KwTest(unittest.TestCase):
         self.execute_all()
         run_kw("verdict", self.run_dir, "source", "fail", "--findings", self.findings("missing"))
         self.assertEqual(run_kw("finish", self.run_dir)[1]["phase"], "partial")
-        self.assertNotEqual(kw.status_of(self.run_dir)["tasks"]["result"]["status"], "verified")
+        self.assertNotEqual(lo.status_of(self.run_dir)["tasks"]["result"]["status"], "verified")
 
     def test_explicit_best_effort_dependency_can_continue(self):
         self.global_plan(checkpoint=True, partial=True, max_repairs=0)
@@ -539,8 +539,8 @@ class KwTest(unittest.TestCase):
     def test_loop_rejected_completion_is_not_reported_as_success(self):
         self.to_executing(n=1, verification="global")
         (self.run_dir / "out" / "foreign.md").write_text("not this attempt")
-        (self.run_dir / "kw-loop.json").write_text(json.dumps({"fake": {
-            "cmd": [sys.executable, "-c", "print('KW_OUTPUT: out/foreign.md')"]}}))
+        (self.run_dir / "loop.json").write_text(json.dumps({"fake": {
+            "cmd": [sys.executable, "-c", "print('TASK_OUTPUT: out/foreign.md')"]}}))
         result = run_kw("loop", self.run_dir, "--harness", "fake")[1]
         self.assertEqual(result["stopped"], "partial")
         self.assertTrue(any("error" in step for step in result["steps"]))
@@ -548,9 +548,9 @@ class KwTest(unittest.TestCase):
 
     def test_native_model_and_effort_are_separate_arguments(self):
         self.run_dir.mkdir()
-        with patch("kw.subprocess.Popen") as popen:
+        with patch("light_orchestrator.subprocess.Popen") as popen:
             popen.return_value.__enter__.return_value.wait.return_value = 0
-            kw.agent_call(kw.HARNESSES["codex"], self.run_dir, "test", "gpt-6-astra", "prompt", 1, "high")
+            lo.agent_call(lo.HARNESSES["codex"], self.run_dir, "test", "gpt-6-astra", "prompt", 1, "high")
             command = popen.call_args.args[0]
             self.assertEqual(command[command.index("--model") + 1], "gpt-6-astra")
             self.assertIn('model_reasoning_effort="high"', command)
@@ -562,7 +562,7 @@ class KwTest(unittest.TestCase):
         child = "import time; from pathlib import Path; time.sleep(1); Path(" + repr(str(marker)) + ").write_text('orphan')"
         parent = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c'," + repr(child) + "]); time.sleep(10)"
         cfg = {"cmd": [sys.executable, "-c", parent]}
-        code, _, _ = kw.agent_call(cfg, self.run_dir, "timeout", None, "", 0.2)
+        code, _, _ = lo.agent_call(cfg, self.run_dir, "timeout", None, "", 0.2)
         self.assertEqual(code, 124)
         time.sleep(1.1)
         self.assertFalse(marker.exists())
@@ -570,7 +570,7 @@ class KwTest(unittest.TestCase):
     def test_loop_end_to_end_with_fake_harness(self):
         run_kw("init", self.run_dir)
         fake = Path(__file__).with_name("tests_fake_agent.py")
-        (self.run_dir / "kw-loop.json").write_text(json.dumps({"fake": {
+        (self.run_dir / "loop.json").write_text(json.dumps({"fake": {
             "cmd": [sys.executable, str(fake), "{model}", "{prompt}"],
             "models": {"fast": "m-fast", "standard": "m-std", "strong": "m-strong"}}}))
         _, r = run_kw("loop", self.run_dir, "--harness", "fake")
@@ -589,7 +589,7 @@ class KwTest(unittest.TestCase):
     def test_loop_stops_for_human_review(self):
         run_kw("init", self.run_dir)
         fake = Path(__file__).with_name("tests_fake_agent.py")
-        (self.run_dir / "kw-loop.json").write_text(json.dumps({"fake": {
+        (self.run_dir / "loop.json").write_text(json.dumps({"fake": {
             "cmd": [sys.executable, str(fake), "{model}", "{prompt}"], "models": {}}}))
         with patch.dict(os.environ, {"FAKE_HUMAN_CHECKPOINT": "t2"}):
             run_kw("loop", self.run_dir, "--harness", "fake")
@@ -597,7 +597,7 @@ class KwTest(unittest.TestCase):
             _, r = run_kw("loop", self.run_dir, "--harness", "fake")
         self.assertEqual(r["stopped"], "awaiting-review", r)
         self.assertIn("human: review t2", r["next"])
-        tasks = kw.status_of(self.run_dir)["tasks"]
+        tasks = lo.status_of(self.run_dir)["tasks"]
         self.assertEqual((tasks["t2"]["status"], tasks["acc"]["status"]), ("done", "todo"))
 
 

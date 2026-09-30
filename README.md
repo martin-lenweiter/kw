@@ -1,167 +1,118 @@
-# kw
+# light-orchestrator
 
-KW adds lightweight scaffolding and shared state around **planning,
-implementation, and verification**. It helps agents divide work, run independent
-tasks in parallel, and check the combined result.
+light-orchestrator keeps the state of a multi-step agent job outside the
+model: what was agreed, what is done, what is checked, and what changed. The
+model does not have to remember the plan, the progress, or a requirement the
+user added halfway through; it reads the current state and the next action.
 
-We trust capable models to choose their methods. Following the bitter lesson,
-we prefer improvements in model capability over accumulating hand-written
-process. KW is not a workflow engine. We add small safeguards only when they
-address concrete failures.
+It works for any multi-step job, such as research, a dataset, or a software
+build, inside an existing agent environment such as Claude Code, Codex, or
+Hermes. That environment supplies models, tools, and service access.
 
-Use KW for research, comparisons, dataset enrichment, and other knowledge work.
-It works with an existing agent environment such as Claude Code, Codex, or
-Hermes. That environment supplies models, tools, context management, and
-service access; KW supplies the shared record of what was agreed and completed.
+## Design principle: delete first
 
-## Start with a brief
+We rely on the planner's and orchestrator's intelligence. They choose the
+approach, the task split, how each task is checked, where the user must
+review, and which models to use. The tool fixes only what must not vary:
 
-Give your agent the [kw-plan skill](skills/kw-plan/SKILL.md) and describe the
-result you want:
+- shared state that one CLI changes, so parallel agents do not collide and a
+  run survives a crash;
+- an independent verifier that checks the result against what was asked;
+- the user's approval of the plan and of later scope changes.
 
-> Use kw-plan to research 50 potential distribution partners. Include a source
-> and a reason for each recommendation. Do not contact anyone or use paid tools.
+We add guidance or code only when a capable model fails without it. When a
+model improves, we remove guidance that it no longer needs.
 
-The planner clarifies material unknowns, proposes coherent assignments, and
-gets an independent critique. Before approval, it shows the deliverables,
-verification approach, costs and permissions, and which tasks use subagents or
-separate processes. It also discloses runtime, model, effort where configurable,
-and maximum concurrency. Approval freezes the task goals and completion criteria.
+## How a run proceeds
 
-## How work proceeds
+| Stage | What happens |
+|---|---|
+| Plan | The planner asks what it must, splits the job into tasks, and writes for each task how an independent verifier will check it. A fresh agent critiques the plan. You approve it. |
+| Implement | Workers claim tasks, run in parallel where tasks are independent, and record their outputs. |
+| Verify | A fresh verifier checks the combined result and records a verdict per task. Failures go back for bounded repair. |
 
-| Stage | Responsibility |
-| --- | --- |
-| Plan | Agree on the goal, constraints, assignments, and verification approach. |
-| Implement | Complete assignments and integrate the result; parallelize independent work when useful. |
-| Verify | Independently check the combined result against the approved goal. |
+A task can be a checkpoint. With `"checkpoint": true`, its consumers wait until
+the verifier passes it. With `"checkpoint": "human"`, the run pauses until you
+review it, for example to approve a design:
 
-Global verification is the default for new runs: completed implementation tasks unlock their
-dependents without a separate review at each step. The final acceptance task
-produces the combined deliverable; a fresh verifier then assesses the whole
-result and records task verdicts in one context.
+```sh
+light-orchestrator verdict <run> design pass
+light-orchestrator verdict <run> design fail --note "simpler layout, larger prices"
+```
 
-For genuinely large work or consequential dependencies, the planner or
-orchestrator can identify an intermediate checkpoint during planning. A task
-marked `"checkpoint": true` must pass verification before its consumers start.
-Explain why the checkpoint is useful; it is not a routine ceremony. Existing
-runs keep their original verification behavior.
+A rejected task goes back to its worker with your note.
 
-Failed checks return focused findings for bounded repair. Unresolved work ends
-as `partial`; `done` requires verified acceptance and no unresolved tasks.
+When you add or change something during a run, the orchestrator records it
+with `light-orchestrator amend`. The run reopens only the affected tasks.
 
 ## Setup
 
-KW is one Python 3 script with no third-party Python dependencies. Make it
-available as `kw` on your PATH. For example, from this checkout, if
-`~/.local/bin` is on your PATH:
+light-orchestrator is one Python 3 script with no third-party dependencies.
+Put it on your PATH, for example:
 
 ```sh
-mkdir -p ~/.local/bin
-ln -s "$PWD/kw.py" ~/.local/bin/kw
-kw --help
+ln -s "$PWD/light_orchestrator.py" ~/.local/bin/light-orchestrator
+light-orchestrator --help
 ```
 
-Make the three skills available to your agent, or point it directly to
-[plan](skills/kw-plan/SKILL.md), [run](skills/kw-run/SKILL.md), and
-[verify](skills/kw-verify/SKILL.md).
+Give your agent the four skills in [`skills/`](skills): plan, run, verify,
+and graph.
 
-## Run from the terminal
+## Start a run
 
-`kw loop` coordinates separate agent processes without an open chat session.
-It requires an installed, authenticated Claude Code or Codex CLI.
+Describe the result you want to your agent:
 
-Claude workers can use an installed `chrome-devtools` MCP server without
-permission prompts. KW inherits the server configuration from Claude Code;
-configure that server in your runtime before using browser tasks. Tasks that
-share a browser must declare the same capacity-one resource in `uses`.
+> Use light-orchestrator-plan to build a site that compares fast-food prices
+> across delivery apps. Show me the design before building the rest.
+
+Or run it headless from the terminal. `loop` drives separate agent processes
+and pauses for answers, plan approval, and human reviews:
 
 ```sh
-kw init runs/partner-research --brief brief.md --max-parallel 4
-kw loop runs/partner-research --harness claude
-kw status runs/partner-research
-kw graph runs/partner-research   # task graph by dependency level, with the current phase
+light-orchestrator init runs/prices --brief brief.md --max-parallel 4
+light-orchestrator loop runs/prices --harness claude   # or --harness codex
+light-orchestrator status runs/prices
+light-orchestrator graph runs/prices
 ```
 
-Use `--harness codex` for Codex. The loop pauses for answers or plan approval.
-Record requested answers in the run's `questions.md`, then continue planning:
+After a pause, answer `questions.md` and run
+`light-orchestrator phase runs/prices planning`, or approve with
+`light-orchestrator approve runs/prices`, or give a review verdict, then run
+`loop` again. `--timeout` sets the limit per agent call (default one hour).
+`<run>/loop.json` overrides the harness command.
 
-```sh
-kw phase runs/partner-research planning
-kw loop runs/partner-research --harness claude
-```
+## Run files
 
-Read `plan.md`, `tasks.json`, and `critique.md`. When you approve:
-
-```sh
-kw approve runs/partner-research
-kw loop runs/partner-research --harness claude
-```
-
-The loop implements, verifies, and handles repair rounds. Logs are in `logs/`.
-`--timeout 3600` sets the default one-hour limit per agent call.
-
-## Shared state and controls
-
-The CLI is the standard way to read and change run state. Do not edit
-`ledger.jsonl` or `state.json` directly.
+Change state only through the CLI; never edit `ledger.jsonl` or `state.json`.
 
 | File or folder | Contents |
-| --- | --- |
-| `brief.md`, `questions.md` | Request and answers. |
-| `plan.md`, `tasks.json`, `critique.md` | Approved approach, assignments, and critique. |
-| `decisions.md` | User decisions during execution. |
-| `out/<task>/<attempt>/` | Output for each execution attempt, with links to any supporting artifacts. |
-| `report.md` | Final status, outputs, verification findings, and unresolved work. |
-| `logs/` | Agent process logs. |
-| `ledger.jsonl`, `state.json` | Progress history and current state. |
+|---|---|
+| `brief.md`, `questions.md` | Request and answers |
+| `plan.md`, `tasks.json`, `critique.md` | Approved approach, tasks, and critique |
+| `decisions.md` | Your decisions during the run |
+| `out/<task>/<attempt>/` | Output of each attempt |
+| `report.md` | Final status, outputs, findings, and unresolved work |
+| `logs/` | Agent process logs |
+| `ledger.jsonl`, `state.json` | Progress history and current state |
 
-**Models.** The planner chooses suitable agents; KW has no fixed worker model
-policy. A task can name an actual `model` ID and a separate `effort`. Omitted
-values inherit runtime configuration. The plan must disclose the selected
-runtime and configuration, including any unresolved choice. Use `kw loop --model <id> --effort <level>` for run-wide settings.
-Loop command overrides live in `<run>/kw-loop.json`. Legacy tier names remain
-compatible with old runs; new plans should use concrete model IDs.
+## Reference
 
-**Concurrency.** `--max-parallel` caps concurrent workers. Use a resource limit,
-such as `--resource browser=1`, when tasks share a surface that requires it;
-tasks declare this in `uses`. Capacity limits do not grant permission, credits,
-or extra API quota.
+**Models.** A task can set a concrete `model` ID and a separate `effort`;
+otherwise it inherits the runtime default. `loop --model` and `--effort` set
+run-wide values.
 
-**Dependencies.** Ordinary `depends_on` inputs must be completed; checkpoint
-inputs must be verified. A blocked required input blocks its consumers. Do not
-present incomplete downstream work as successful delivery.
+**Concurrency.** `--max-parallel` caps concurrent workers. `--resource
+browser=1` limits tasks that declare the resource in `uses`. Limits do not
+grant permissions or quota.
 
-**Recovery.** Each claim has a unique token and output path. Completion must
-include that token, so an old worker cannot complete a newer attempt. Inspect
-logs before retrying failed processes. `kw resume <run>` marks expired
-claims as needing attention; it does not prove that an external write failed. Check the destination
-before repeating publication and keep one designated writer.
+**Dependencies.** Ordinary inputs must be completed; checkpoint inputs must be
+verified. A blocked input blocks its consumers.
 
-**Requirement changes.** Only the user changes approved scope. Record the
-change with `kw amend <run> <file> --note "requested change"`. The file lists
-new tasks, revised fields for existing tasks, and `{"id": ..., "drop": true}`
-for tasks that are no longer required. kw reopens the revised tasks,
-their dependents, and the acceptance task. Other verified work stays verified.
-A finished run returns to `executing`. The ledger keeps the original plan
-and each amendment.
+**Recovery.** Each claim has a token and its own output path, so an old worker
+cannot complete a newer attempt. `resume` marks expired claims for attention;
+it does not show whether an external write failed. `resolve` returns a
+`needs-human` task after a fix, or with `--retry` for a new attempt.
+`resume --force` releases running claims only after you stop their workers.
 
-**Repairs.** Verification findings drive focused repair, with bounded retries.
-After an authorized fix to a `needs-human` task, use
-`kw resolve <run> <task> --note "what was fixed" --output <path>` to return it
-for review. If execution failed before producing a result, stop the old worker,
-check external writes, then use `kw resolve <run> <task> --retry --note "reason"`.
-`kw resume --force` releases running claims only after you have stopped their
-workers and reconciled external writes.
-
-A damaged ledger stops with a diagnostic, including an incomplete final record.
-KW preserves the file for deliberate recovery rather than silently dropping history.
-
-## Development
-
-Instructions live in `skills/`; state and loop commands live in `kw.py`.
-Keep changes small and test concrete behavior:
-
-```sh
-python3 -m unittest test_kw
-```
+**Repairs.** Verification findings drive repairs, with a cap per task and per
+run. A defect that repeats stops the task as `needs-human`.
