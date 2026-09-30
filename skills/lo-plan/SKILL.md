@@ -1,6 +1,6 @@
 ---
 name: lo-plan
-description: Plan a new lo (light-orchestrator) run or continue one in clarifying, awaiting-answers, planning, or awaiting-approval. Define tasks and how each is checked, obtain an independent critique, and request user approval.
+description: Plan a new lo (light-orchestrator) run or continue one in clarifying, awaiting-answers, planning, or awaiting-approval. Define tasks and how each is checked, obtain an independent critique, and request user approval. Use when the user asks to use lo or light-orchestrator, or for a large multi-step job that benefits from tracked tasks and independent checking.
 ---
 
 # Plan
@@ -11,14 +11,17 @@ the approach, the task split, the checks, and the models. Change state only
 through the `lo` CLI; never edit `state.json` or
 `ledger.jsonl`.
 
-Start with `lo status <run>` and follow `next`. For new work,
-use `lo init <run> --brief <file>`.
+Start with `lo status <run>` and follow `next`. For new work, write the
+user's request to a brief and run `lo init <run> --brief <file>`. Unless the
+user names a place, use `.lo/<short-name>` in the working directory as the run,
+and in a git repository add `.lo/` to `.git/info/exclude` so run state is not
+committed.
 
 ## Clarify
 
 Ask only about missing information that changes the result or your authority,
-such as scope, costs, and external writes. Record questions and answers in
-`questions.md`. If you need an answer, run
+such as scope, costs, and external writes. Ask the user in the conversation
+and record questions and answers in `questions.md`. In a headless run, run
 `lo phase <run> awaiting-answers` and stop. When the brief is
 clear, run `lo phase <run> planning`.
 
@@ -64,6 +67,8 @@ findings in `critique.md` and resolve material issues.
 
 Show the user the deliverables, how each is checked, the human checkpoints,
 the agents and models, and any costs or external writes. Then run
-`lo phase <run> awaiting-approval`. Only the user approves,
-with `lo approve <run>`. Approval freezes task goals and
-`done_when`; only the user changes them later, through `amend`.
+`lo phase <run> awaiting-approval` and ask for approval. Only the user
+approves: when the user approves in the conversation, run `lo approve <run>`
+and continue with the lo-run skill in the same conversation. Approval freezes
+task goals and `done_when`; only the user changes them later, through
+`amend`.

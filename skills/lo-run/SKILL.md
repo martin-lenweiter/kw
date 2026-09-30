@@ -23,7 +23,11 @@ show whether their external writes succeeded.
    `lo done <run> <id> --token <token> --output out/<id>/<token>/result.md`
    and check that the command succeeded.
 
-Run independent tasks in parallel where it helps. Use the model and effort
+Run independent tasks in parallel where it helps. When a
+`"checkpoint": "human"` task is done, show the user its result in the
+conversation and ask for a verdict. Record the answer with
+`lo verdict <run> <id> pass`, or `fail --note "<feedback>"`, from the
+verifying phase, then continue. Use the model and effort
 set on each task. When nothing is runnable and no workers remain, run
 `lo phase <run> verifying` and hand over to an independent
 verifier.
