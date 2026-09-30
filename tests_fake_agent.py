@@ -13,11 +13,11 @@ if "lo planner" in prompt:
     phase = json.loads(lo("status", str(run)).stdout)["phase"]
     if phase == "clarifying":
         lo("phase", str(run), "planning")
-    tasks = [{"id": "t1", "goal": "g1", "done_when": "file says ok", "model": "fast"},
+    tasks = [{"id": "t1", "goal": "g1", "done_when": "file says ok", "model": "model-a"},
              {"id": "t2", "goal": "g2", "done_when": "file says ok",
               "checkpoint": "human" if os.environ.get("FAKE_HUMAN_CHECKPOINT") == "t2" else False},
              {"id": "acc", "goal": "check all", "done_when": "both ok", "depends_on": ["t1", "t2"],
-              "acceptance": True, "model": "strong"}]
+              "acceptance": True, "model": "model-b"}]
     (run / "tasks.json").write_text(json.dumps(tasks))
     (run / "plan.md").write_text("plan")
     lo("tasks", "set", str(run), str(run / "tasks.json"))

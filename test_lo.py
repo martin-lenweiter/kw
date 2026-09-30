@@ -38,13 +38,12 @@ class KwTest(unittest.TestCase):
         return path
 
     def to_executing(self, n=2, **init):
-        init.setdefault("verification", "per-task")
         flags = []
         for k, v in init.items():
             flags += [f"--{k.replace('_', '-')}", v]
         run_lo("init", self.run_dir, *flags)
         run_lo("phase", self.run_dir, "planning")
-        tasks = [{"id": f"t{i}", "goal": f"goal {i}", "done_when": "x"} for i in range(1, n + 1)]
+        tasks = [{"id": f"t{i}", "goal": f"goal {i}", "done_when": "x", "checkpoint": True} for i in range(1, n + 1)]
         tasks[-1]["acceptance"] = True
         tasks[-1]["depends_on"] = [x["id"] for x in tasks[:-1]]
         run_lo("tasks", "set", self.run_dir, self.write("tasks.json", tasks))
@@ -150,7 +149,7 @@ class KwTest(unittest.TestCase):
         self.assertEqual(r["phase"], "partial")
 
     def test_repair_cap(self):
-        self.to_executing(n=1, max_repairs=1, max_rounds=5)
+        self.to_executing(n=1, max_repairs=1)
         self.execute_all()
         run_lo("verdict", self.run_dir, "t1", "fail", "--findings", self.findings("a"))
         run_lo("finish", self.run_dir)
@@ -158,18 +157,6 @@ class KwTest(unittest.TestCase):
         _, r = run_lo("verdict", self.run_dir, "t1", "fail", "--findings", self.findings("b"))
         self.assertEqual(r["status"], "needs-human")
         self.assertIn("repair cap", r["stop_reason"])
-
-    def test_round_cap(self):
-        self.to_executing(n=1, max_repairs=9, max_rounds=2)
-        self.execute_all()
-        run_lo("verdict", self.run_dir, "t1", "fail", "--findings", self.findings("a"))
-        run_lo("finish", self.run_dir)
-        self.execute_all()
-        run_lo("verdict", self.run_dir, "t1", "fail", "--findings", self.findings("b"))
-        _, r = run_lo("finish", self.run_dir)  # t1 already had a repair: cap applies
-        self.assertEqual(r["phase"], "partial")
-        _, s = run_lo("status", self.run_dir)
-        self.assertIn("round cap", s["tasks"][0]["stop_reason"])
 
     def test_verifier_cannot_pass_with_blocking_or_fail_without(self):
         self.to_executing(n=1)
@@ -296,12 +283,12 @@ class KwTest(unittest.TestCase):
         code, _ = run_lo("amend", self.run_dir, self.write("a.json", [{"id": "a", "goal": "g", "done_when": "d", "acceptance": True}]), "--note", "n", check=False)
         self.assertEqual(code, 2)
 
-    def staged(self, max_rounds=3, max_repairs=2):
-        run_lo("init", self.run_dir, "--verification", "per-task", "--max-rounds", max_rounds, "--max-repairs", max_repairs)
+    def staged(self, max_repairs=2):
+        run_lo("init", self.run_dir, "--max-repairs", max_repairs)
         run_lo("phase", self.run_dir, "planning")
-        tasks = [{"id": "r1", "goal": "g", "done_when": "x"},
-                 {"id": "r2", "goal": "g", "done_when": "x"},
-                 {"id": "p1", "goal": "g", "done_when": "x", "depends_on": ["r1", "r2"]},
+        tasks = [{"id": "r1", "goal": "g", "done_when": "x", "checkpoint": True},
+                 {"id": "r2", "goal": "g", "done_when": "x", "checkpoint": True},
+                 {"id": "p1", "goal": "g", "done_when": "x", "depends_on": ["r1", "r2"], "checkpoint": True},
                  {"id": "c1", "goal": "g", "done_when": "x", "depends_on": ["p1"], "acceptance": True}]
         run_lo("tasks", "set", self.run_dir, self.write("tasks.json", tasks))
         run_lo("phase", self.run_dir, "awaiting-approval")
@@ -315,7 +302,7 @@ class KwTest(unittest.TestCase):
         return run_lo("finish", self.run_dir)[1]
 
     def test_dependencies_gate_claims_and_stages_do_not_use_rounds(self):
-        self.staged(max_rounds=1)
+        self.staged()
         self.execute_all()  # only r1, r2 are claimable
         _, s = run_lo("status", self.run_dir)
         self.assertEqual([t["status"] for t in s["tasks"]], ["done", "done", "todo", "todo"])
@@ -329,17 +316,6 @@ class KwTest(unittest.TestCase):
         self.assertEqual(r["phase"], "done")
         _, s = run_lo("status", self.run_dir)
         self.assertEqual(s["round"], 1)
-
-    def test_needs_human_dependency_unblocks_dependents(self):
-        self.staged(max_repairs=0)
-        self.execute_all()
-        run_lo("verdict", self.run_dir, "r1", "pass")
-        _, r = run_lo("verdict", self.run_dir, "r2", "fail", "--findings", self.findings("a"))
-        self.assertEqual(r["status"], "needs-human")
-        _, r = run_lo("finish", self.run_dir)
-        self.assertEqual(r["ready"], ["p1"])
-        _, c = run_lo("claim", self.run_dir, "--owner", "w")
-        self.assertEqual(c["dependencies"]["r2"]["status"], "needs-human")
 
     def test_dependency_cycle_rejected(self):
         run_lo("init", self.run_dir)
@@ -379,27 +355,6 @@ class KwTest(unittest.TestCase):
         code, _ = run_lo("tasks", "set", self.run_dir, self.write("t.json", tasks), check=False)
         self.assertEqual(code, 2)
 
-    def test_first_failure_in_last_round_still_gets_a_repair(self):
-        # a1 fails in round 1 and uses round 2; a2 depends on a1 and first fails in round 2 (the cap)
-        run_lo("init", self.run_dir, "--verification", "per-task", "--max-rounds", "2")
-        run_lo("phase", self.run_dir, "planning")
-        tasks = [{"id": "a1", "goal": "g", "done_when": "x"},
-                 {"id": "a2", "goal": "g", "done_when": "x", "depends_on": ["a1"], "acceptance": True}]
-        run_lo("tasks", "set", self.run_dir, self.write("t.json", tasks))
-        run_lo("phase", self.run_dir, "awaiting-approval")
-        run_lo("approve", self.run_dir)
-        self.execute_all()
-        run_lo("verdict", self.run_dir, "a1", "fail", "--findings", self.findings("x"))
-        run_lo("finish", self.run_dir)
-        self.execute_all()
-        run_lo("verdict", self.run_dir, "a1", "pass")
-        run_lo("finish", self.run_dir)
-        self.execute_all()
-        run_lo("verdict", self.run_dir, "a2", "fail", "--findings", self.findings("y"))
-        _, r = run_lo("finish", self.run_dir)
-        self.assertEqual(r["phase"], "executing")
-        self.assertEqual(r["repairs"], ["a2"])
-
     def test_resolve_needs_human_then_done(self):
         self.to_executing(n=1, max_repairs=0)
         self.execute_all()
@@ -414,12 +369,12 @@ class KwTest(unittest.TestCase):
         _, r = run_lo("finish", self.run_dir)
         self.assertEqual(r["phase"], "done")
 
-    def global_plan(self, checkpoint=False, partial=False, max_repairs=2):
+    def global_plan(self, checkpoint=False, max_repairs=2):
         run_lo("init", self.run_dir, "--max-repairs", max_repairs)
         run_lo("phase", self.run_dir, "planning")
         tasks = [{"id": "source", "goal": "research", "done_when": "supported", "checkpoint": checkpoint},
                  {"id": "result", "goal": "integrate", "done_when": "goal met", "acceptance": True,
-                  "depends_on": ["source"], "allow_partial_inputs": partial}]
+                  "depends_on": ["source"]}]
         run_lo("tasks", "set", self.run_dir, self.write("tasks.json", tasks))
         run_lo("phase", self.run_dir, "awaiting-approval")
         run_lo("approve", self.run_dir)
@@ -484,15 +439,6 @@ class KwTest(unittest.TestCase):
         self.assertEqual(run_lo("finish", self.run_dir)[1]["phase"], "partial")
         self.assertNotEqual(lo.status_of(self.run_dir)["tasks"]["result"]["status"], "verified")
 
-    def test_explicit_best_effort_dependency_can_continue(self):
-        self.global_plan(checkpoint=True, partial=True, max_repairs=0)
-        self.execute_all()
-        run_lo("verdict", self.run_dir, "source", "fail", "--findings", self.findings("missing"))
-        self.assertEqual(run_lo("finish", self.run_dir)[1]["phase"], "executing")
-        self.execute_all()
-        run_lo("verdict", self.run_dir, "result", "pass")
-        self.assertEqual(run_lo("finish", self.run_dir)[1]["phase"], "partial")
-
     def test_stale_claim_cannot_complete_new_attempt(self):
         self.to_executing(n=1)
         first = run_lo("claim", self.run_dir, "--owner", "old")[1]
@@ -537,7 +483,7 @@ class KwTest(unittest.TestCase):
         self.assertEqual(self.pass_all_done()["phase"], "done")
 
     def test_loop_rejected_completion_is_not_reported_as_success(self):
-        self.to_executing(n=1, verification="global")
+        self.to_executing(n=1)
         (self.run_dir / "out" / "foreign.md").write_text("not this attempt")
         (self.run_dir / "loop.json").write_text(json.dumps({"fake": {
             "cmd": [sys.executable, "-c", "print('TASK_OUTPUT: out/foreign.md')"]}}))
@@ -571,8 +517,7 @@ class KwTest(unittest.TestCase):
         run_lo("init", self.run_dir)
         fake = Path(__file__).with_name("tests_fake_agent.py")
         (self.run_dir / "loop.json").write_text(json.dumps({"fake": {
-            "cmd": [sys.executable, str(fake), "{model}", "{prompt}"],
-            "models": {"fast": "m-fast", "standard": "m-std", "strong": "m-strong"}}}))
+            "cmd": [sys.executable, str(fake), "{model}", "{prompt}"]}}))
         _, r = run_lo("loop", self.run_dir, "--harness", "fake")
         self.assertEqual(r["stopped"], "awaiting-approval")  # human gate respected
         run_lo("approve", self.run_dir)
@@ -583,14 +528,14 @@ class KwTest(unittest.TestCase):
         self.assertEqual((self.run_dir / "out" / "verifier.calls").read_text().split(), ["stage", "stage"])
         t1 = [t for t in s["tasks"] if t["id"] == "t1"][0]
         self.assertEqual(t1["attempts"], 1)  # one repair after the fake verifier failed it
-        self.assertEqual((self.run_dir / "out" / "t1.calls").read_text().split(), ["m-fast", "m-fast"])
-        self.assertEqual((self.run_dir / "out" / "acc.calls").read_text().split(), ["m-strong", "m-strong"])
+        self.assertEqual((self.run_dir / "out" / "t1.calls").read_text().split(), ["model-a", "model-a"])
+        self.assertEqual((self.run_dir / "out" / "acc.calls").read_text().split(), ["model-b", "model-b"])
 
     def test_loop_stops_for_human_review(self):
         run_lo("init", self.run_dir)
         fake = Path(__file__).with_name("tests_fake_agent.py")
         (self.run_dir / "loop.json").write_text(json.dumps({"fake": {
-            "cmd": [sys.executable, str(fake), "{model}", "{prompt}"], "models": {}}}))
+            "cmd": [sys.executable, str(fake), "{model}", "{prompt}"]}}))
         with patch.dict(os.environ, {"FAKE_HUMAN_CHECKPOINT": "t2"}):
             run_lo("loop", self.run_dir, "--harness", "fake")
             run_lo("approve", self.run_dir)
@@ -604,7 +549,7 @@ class KwTest(unittest.TestCase):
         run_lo("init", self.run_dir)
         fake = Path(__file__).with_name("tests_fake_agent.py")
         (self.run_dir / "loop.json").write_text(json.dumps({"fake": {
-            "cmd": [sys.executable, str(fake), "{model}", "{prompt}"], "models": {}}}))
+            "cmd": [sys.executable, str(fake), "{model}", "{prompt}"]}}))
         with patch.dict(os.environ, {"FAKE_DECISIONS": "1"}):
             run_lo("loop", self.run_dir, "--harness", "fake")
             run_lo("approve", self.run_dir)

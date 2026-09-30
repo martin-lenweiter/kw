@@ -6,7 +6,8 @@ description: Coordinate implementation of an approved lo (light-orchestrator) pl
 # Implement
 
 Change state only through the `lo` CLI. Start with
-`lo resume <run>` and `lo status <run>`.
+`lo resume <run>` and `lo status <run>`. When the user asks to see the run,
+show the output of `lo graph <run>` in a code block.
 Resume marks expired claims for attention; it does not stop old processes or
 show whether their external writes succeeded.
 

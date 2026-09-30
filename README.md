@@ -1,118 +1,152 @@
 # lo (light-orchestrator)
 
-`lo` keeps the state of a multi-step agent job outside the
-model: what was agreed, what is done, what is checked, and what changed. The
-model does not have to remember the plan, the progress, or a requirement the
-user added halfway through; it reads the current state and the next action.
+`lo` is a shared to-do board for a team of AI agents working on one job. It
+records what was agreed, what is done, what was checked, and what changed, in
+files outside any agent's context. Agents read the board instead of
+remembering, so a long or parallel job stays on track even when you change
+your mind halfway through.
 
-It works for any multi-step job, such as research, a dataset, or a software
-build, inside an existing agent environment such as Claude Code, Codex, or
-Hermes. That environment supplies models, tools, and service access.
+It is not an agent itself. It runs inside an agent environment such as Claude
+Code, Codex, or Hermes, which supplies the models and tools. `lo` supplies the
+board and three short skills that tell agents how to use it.
+
+## Why
+
+- **Less for the model to remember.** The plan, the progress, and every
+  decision live in the run folder. When you add a requirement mid-run, it is
+  written there, and every agent sees it.
+- **One source of truth.** The orchestrator, the workers, and the verifier
+  read the same plan and decision log. A change raised by you or discovered by
+  an agent goes into that record; minor questions the orchestrator decides and
+  logs, material ones come to you.
+- **Independent checking.** A fresh agent that did not do the work checks the
+  result against what you asked for.
 
 ## Design principle: delete first
 
-We rely on the planner's and orchestrator's intelligence. They choose the
-approach, the task split, how each task is checked, where the user must
-review, and which models to use. The tool fixes only what must not vary:
+We rely on the agents' intelligence. The planner and orchestrator choose the
+approach, the task split, how each task is checked, where you review, and
+which models to use. `lo` fixes only what must not vary: the shared state, the
+independent check, and your approval of the plan and of scope changes. We add
+a rule or a feature only when capable models fail without it, and remove it
+when they no longer need it.
 
-- shared state that one CLI changes, so parallel agents do not collide and a
-  run survives a crash;
-- an independent verifier that checks the result against what was asked;
-- the user's approval of the plan and of later scope changes.
+## Using it
 
-We add guidance or code only when a capable model fails without it. When a
-model improves, we remove guidance that it no longer needs.
+Open a chat in the folder or repository you want to work in and say:
 
-## How a run proceeds
+> Use lo to build a site that compares fast-food prices across delivery apps.
+> Show me the design before building the rest.
+
+The agent then:
+
+1. creates a run folder (`.lo/<name>`, hidden from git), asks what it needs,
+   writes a plan in which every task says how it will be checked, has a fresh
+   agent critique the plan, and asks for your approval;
+2. after you approve in the chat, runs the tasks, in parallel where they are
+   independent;
+3. stops at each point where you asked to review, shows you the result, and
+   records your answer;
+4. has a fresh agent verify the combined result, repairs what fails, and
+   reports what was delivered, how it was checked, and what is unresolved.
+
+You answer questions and approve in the conversation; you do not need to type
+commands. To run a job without a chat, use the headless loop:
+
+```sh
+lo init runs/prices --brief brief.md
+lo loop runs/prices --harness claude    # or --harness codex
+```
+
+The loop starts separate agent processes and pauses whenever it needs you:
+for answers (`questions.md`), for plan approval (`lo approve runs/prices`),
+and for your reviews (`lo verdict ...`). Run `lo loop` again to continue.
+
+## How a run works
 
 | Stage | What happens |
 |---|---|
-| Plan | The planner asks what it must, splits the job into tasks, and writes for each task how an independent verifier will check it. A fresh agent critiques the plan. You approve it. |
-| Implement | Workers claim tasks, run in parallel where tasks are independent, and record their outputs. |
-| Verify | A fresh verifier checks the combined result and records a verdict per task. Failures go back for bounded repair. |
+| Plan | The planner clarifies the request, splits it into tasks, and writes each task's check (`done_when`). A fresh agent critiques the plan. You approve it. |
+| Implement | Workers claim tasks and record their outputs. A task starts when its inputs are done. |
+| Verify | A fresh verifier checks the combined result and gives each task a verdict. Failed tasks go back for a bounded number of repairs. |
 
-A task can be a checkpoint. With `"checkpoint": true`, its consumers wait until
-the verifier passes it. With `"checkpoint": "human"`, the run pauses until you
-review it, for example to approve a design:
+**Checkpoints.** A task marked `"checkpoint": true` must pass verification
+before the tasks that depend on it start. A task marked
+`"checkpoint": "human"` waits for your verdict, for example on a design:
 
 ```sh
 lo verdict <run> design pass
 lo verdict <run> design fail --note "simpler layout, larger prices"
 ```
 
-A rejected task goes back to its worker with your note.
+**Changes and decisions.** When you change the request, the orchestrator
+records it with `lo amend`, which reopens only the affected tasks. Workers
+report the decisions they make under `## Decisions` and the questions they
+cannot settle under `## Needs decision` in their results. Decisions go into
+`decisions.md`; open questions stop the task until you answer.
 
-When you add or change something during a run, the orchestrator records it
-with `lo amend`. The run reopens only the affected tasks.
+**End states.** A run ends `done` when the final (acceptance) task passes and
+nothing is unresolved, otherwise `partial`, with the open items in
+`report.md`.
+
+## Parts
+
+| Part | What it is |
+|---|---|
+| `lo` (`lo.py`) | The command-line tool that owns the run state. Every change goes through it, so parallel agents cannot overwrite each other and a run survives a crash. One Python 3 file, no dependencies. |
+| `skills/lo-plan` | How to plan a run: clarify, write tasks with checks, get a critique, ask for approval. |
+| `skills/lo-run` | How to coordinate the work: claim tasks, brief workers, keep the plan and decisions current, record changes, handle problems. |
+| `skills/lo-verify` | How to check the result independently and record verdicts. |
+| `lo loop` | Optional driver that runs the planner, workers, and verifier as separate `claude` or `codex` processes, without a chat. |
+| Run folder | The board itself; see below. |
+
+## Run folder
+
+| File | Contents |
+|---|---|
+| `brief.md`, `questions.md` | Your request, and the questions with their answers |
+| `plan.md`, `tasks.json`, `critique.md` | The current plan, the tasks with their checks, and the critique |
+| `decisions.md` | Every decision made during the run, and who made it |
+| `out/<task>/<attempt>/` | Each worker's output |
+| `report.md` | Final status, outputs, findings, and unresolved work |
+| `ledger.jsonl`, `state.json` | The full history and the current state; change them only through `lo` |
+| `logs/` | Agent process logs from `lo loop` |
 
 ## Setup
 
-`lo` is one Python 3 script with no third-party dependencies.
-Put it on your PATH, for example:
+Link the script onto your PATH and give your agent the three skills:
 
 ```sh
 ln -s "$PWD/lo.py" ~/.local/bin/lo
 lo --help
 ```
 
-Give your agent the four skills in [`skills/`](skills): plan, run, verify,
-and graph.
+## Command reference
 
-## Start a run
+| Command | Use |
+|---|---|
+| `lo init <run> --brief <file>` | Create a run |
+| `lo status <run>` / `lo graph <run>` | Current state and next action / task graph |
+| `lo phase <run> <phase>` | Move between planning phases |
+| `lo tasks set <run> <file>` | Load the planned tasks |
+| `lo approve <run>` | Approve the plan (on your instruction) |
+| `lo claim`, `lo done`, `lo block` | A worker takes a task, completes it, or reports a blocker |
+| `lo verdict <run> <id> pass\|fail` | Record a verdict (`--findings <file>` or `--note <text>`) |
+| `lo finish <run>` | Close a verification round |
+| `lo amend <run> <file>` | Record a change to the approved tasks |
+| `lo resolve <run> <id>` | Return a task that needed you, after a fix or with `--retry` |
+| `lo resume <run>` | Recover after a crash; flags expired claims |
+| `lo loop <run> --harness claude\|codex` | Run headless |
 
-Describe the result you want to your agent:
-
-> Use lo-plan to build a site that compares fast-food prices
-> across delivery apps. Show me the design before building the rest.
-
-Or run it headless from the terminal. `loop` drives separate agent processes
-and pauses for answers, plan approval, and human reviews:
-
-```sh
-lo init runs/prices --brief brief.md --max-parallel 4
-lo loop runs/prices --harness claude   # or --harness codex
-lo status runs/prices
-lo graph runs/prices
-```
-
-After a pause, answer `questions.md` and run
-`lo phase runs/prices planning`, or approve with
-`lo approve runs/prices`, or give a review verdict, then run
-`loop` again. `--timeout` sets the limit per agent call (default one hour).
+**Options.** `init --max-parallel N` caps concurrent workers.
+`init --resource browser=1` limits tasks that declare `"uses": ["browser"]`.
+`init --max-repairs N` sets repairs per task (default 2); a finding that
+repeats stops the task for you. Tasks can set a concrete `model` and a
+separate `effort`; `lo loop --model` and `--effort` set run-wide values, and
 `<run>/loop.json` overrides the harness command.
 
-## Run files
-
-Change state only through the CLI; never edit `ledger.jsonl` or `state.json`.
-
-| File or folder | Contents |
-|---|---|
-| `brief.md`, `questions.md` | Request and answers |
-| `plan.md`, `tasks.json`, `critique.md` | Approved approach, tasks, and critique |
-| `decisions.md` | Your decisions during the run |
-| `out/<task>/<attempt>/` | Output of each attempt |
-| `report.md` | Final status, outputs, findings, and unresolved work |
-| `logs/` | Agent process logs |
-| `ledger.jsonl`, `state.json` | Progress history and current state |
-
-## Reference
-
-**Models.** A task can set a concrete `model` ID and a separate `effort`;
-otherwise it inherits the runtime default. `loop --model` and `--effort` set
-run-wide values.
-
-**Concurrency.** `--max-parallel` caps concurrent workers. `--resource
-browser=1` limits tasks that declare the resource in `uses`. Limits do not
-grant permissions or quota.
-
-**Dependencies.** Ordinary inputs must be completed; checkpoint inputs must be
-verified. A blocked input blocks its consumers.
-
-**Recovery.** Each claim has a token and its own output path, so an old worker
-cannot complete a newer attempt. `resume` marks expired claims for attention;
-it does not show whether an external write failed. `resolve` returns a
-`needs-human` task after a fix, or with `--retry` for a new attempt.
-`resume --force` releases running claims only after you stop their workers.
-
-**Repairs.** Verification findings drive repairs, with a cap per task and per
-run. A defect that repeats stops the task as `needs-human`.
+**Recovery.** Each claim has a token and its own output folder, so a stale
+worker cannot overwrite a newer attempt. A claim lease lasts 30 minutes.
+`resume` flags expired claims but cannot tell whether their external writes
+succeeded; check before you retry. `resume --force` releases running claims
+only after you have stopped their workers.

@@ -26,8 +26,7 @@ LEDGER = "ledger.jsonl"
 STATE = "state.json"
 LOCK = ".lock"
 
-DEFAULTS = {"max_repairs": 2, "max_rounds": 3, "lease_seconds": 1800, "max_parallel": 0}
-MODEL_TIERS = {"fast", "standard", "strong"}
+DEFAULTS = {"max_repairs": 2, "lease_seconds": 1800, "max_parallel": 0}
 
 # Run phases and the phases each one may move to.
 PHASES = {
@@ -68,11 +67,10 @@ def empty_state():
 
 
 TASK_SPEC_KEYS = ("id", "goal", "done_when", "depends_on", "acceptance", "uses", "model",
-                  "effort", "inputs", "checkpoint", "allow_partial_inputs")
+                  "effort", "checkpoint")
 
 
 def new_task(state, spec):
-    per_task = state["config"].get("verification") != "global"
     return {
         "id": spec["id"],
         "goal": spec["goal"],
@@ -80,11 +78,9 @@ def new_task(state, spec):
         "depends_on": spec.get("depends_on", []),
         "acceptance": bool(spec.get("acceptance")),
         "uses": spec.get("uses", []),
-        "model": spec.get("model", "standard" if per_task else None),
+        "model": spec.get("model"),
         "effort": spec.get("effort"),
-        "inputs": spec.get("inputs", []),
         "checkpoint": "human" if spec.get("checkpoint") == "human" else bool(spec.get("checkpoint")),
-        "allow_partial_inputs": bool(spec.get("allow_partial_inputs", per_task)),
         "status": "todo",
         "attempts": 0,
         "owner": None,
@@ -293,12 +289,7 @@ def ready(state, task):
     for dep in task.get("depends_on", []):
         source = state["tasks"][dep]
         status = source["status"]
-        if status == "verified":
-            continue
-        if status == "needs-human" and task.get("allow_partial_inputs"):
-            continue
-        if (status == "done" and state["config"].get("verification") == "global"
-                and not source.get("checkpoint")):
+        if status == "verified" or (status == "done" and not source.get("checkpoint")):
             continue
         return False
     return True
@@ -307,7 +298,6 @@ def ready(state, task):
 def settle_blocked(run, state):
     while True:
         ids = [t["id"] for t in state["tasks"].values() if t["status"] == "todo"
-               and not t.get("allow_partial_inputs")
                and any(state["tasks"][d]["status"] == "needs-human" for d in t["depends_on"])]
         if not ids:
             return
@@ -422,7 +412,6 @@ def cmd_init(args):
             raise OrchestratorError(f"--resource needs name=capacity (capacity >= 1): {item}")
         resources[name] = int(cap)
     config["resources"] = resources
-    config["verification"] = args.verification
     run = Run(d)
     with run.locked():
         run.append(empty_state(), {"type": "init", "title": args.title or d.name, "config": config})
@@ -683,7 +672,7 @@ def cmd_claim(args):
                                    "lease_until": now() + lease, "token": token, "output_dir": output_dir})
                 return {"claimed": tid, "goal": task["goal"], "done_when": task["done_when"],
                         "model": task.get("model"), "effort": task.get("effort"),
-                        "token": token, "output_dir": output_dir, "inputs": task.get("inputs", []),
+                        "token": token, "output_dir": output_dir,
                         "uses": task.get("uses", []),
                         "attempts": task["attempts"], "last_findings": task["last_findings"],
                         "dependencies": {d: {"status": state["tasks"][d]["status"],
@@ -789,22 +778,11 @@ def cmd_finish(args):
         settle_blocked(run, state)
         if counts(state)["todo"]:
             repairs = [t["id"] for t in state["tasks"].values() if t["status"] == "todo" and t["attempts"]]
-            # The run round cap stops tasks that already had a repair. A task that
-            # failed for the first time still gets one repair; stall detection and
-            # max_repairs bound it.
-            capped = [tid for tid in repairs if state["tasks"][tid]["attempts"] >= 2]
-            if capped and state["round"] >= state["config"]["max_rounds"]:
-                run.append(state, {"type": "escalate", "ids": capped,
-                                   "reason": f"run round cap reached ({state['config']['max_rounds']})"})
-            settle_blocked(run, state)
-            if counts(state)["todo"]:
-                # Only repair rounds count against max_rounds; dependency stages do not.
-                run.append(state, {"type": "phase", "from": "verifying", "to": "executing",
-                                   "round_up": bool(repairs)})
-                return {"phase": "executing", "round": state["round"],
-                        "repairs": [r for r in repairs if state["tasks"][r]["status"] == "todo"],
-                        "ready": [t["id"] for t in state["tasks"].values()
-                                  if t["status"] == "todo" and ready(state, t)]}
+            run.append(state, {"type": "phase", "from": "verifying", "to": "executing",
+                               "round_up": bool(repairs)})
+            return {"phase": "executing", "round": state["round"], "repairs": repairs,
+                    "ready": [t["id"] for t in state["tasks"].values()
+                              if t["status"] == "todo" and ready(state, t)]}
         accept = [t for t in state["tasks"].values() if t.get("acceptance")]
         accepted = all(t["status"] == "verified" for t in accept)
         final = "done" if counts(state)["needs-human"] == 0 and accepted else "partial"
@@ -854,14 +832,6 @@ def cmd_resume(args):
     return {"phase": state["phase"], "released": released, "next": next_action(state)}
 
 
-def cmd_rebuild(args):
-    run = Run(args.run)
-    with run.locked():
-        state = run.rebuild()
-        run.write_snapshot(state)
-    return {"phase": state["phase"], "events": state["events"]}
-
-
 # ---------------------------------------------------------------------- loop
 # The loop drives a run headlessly through any CLI agent harness. It never
 # decides for the human: it stops at awaiting-answers and awaiting-approval.
@@ -872,19 +842,17 @@ HARNESSES = {
         "cmd": ["claude", "-p", "{prompt}", "--permission-mode", "acceptEdits",
                 "--allowedTools=Bash,Read,Write,Edit,Glob,Grep,WebSearch,WebFetch,mcp__chrome-devtools"],
         "native": "claude",
-        "models": {"fast": "haiku", "standard": "sonnet", "strong": "opus"},
     },
     "codex": {
         "cmd": ["codex", "exec", "--skip-git-repo-check", "--sandbox", "workspace-write", "{prompt}"],
         "native": "codex",
-        "models": {"fast": "low", "standard": "medium", "strong": "high"},
     },
 }
 
 
 def loop_config(run_dir, harness):
     """Harness template, overridable per run in <run>/loop.json."""
-    cfg = json.loads(json.dumps(HARNESSES[harness])) if harness in HARNESSES else {"cmd": [], "models": {}}
+    cfg = json.loads(json.dumps(HARNESSES[harness])) if harness in HARNESSES else {"cmd": []}
     path = Path(run_dir) / "loop.json"
     if path.exists():
         override = json.loads(path.read_text()).get(harness, {})
@@ -896,15 +864,13 @@ def loop_config(run_dir, harness):
     return cfg
 
 
-def agent_call(cfg, run_dir, name, model_tier, prompt, timeout, effort=None):
-    model = cfg.get("models", {}).get(model_tier, model_tier) or ""
+def agent_call(cfg, run_dir, name, model, prompt, timeout, effort=None):
+    model = model or ""
     cmd = [part.replace("{model}", model).replace("{effort}", effort or "")
            .replace("{prompt}", prompt).replace("{run}", str(run_dir)) for part in cfg["cmd"]]
     native = cfg.get("native")
     if native == "codex":
-        if model_tier in MODEL_TIERS:
-            effort = effort or model
-        elif model:
+        if model:
             cmd[2:2] = ["--model", model]
         if effort:
             cmd[2:2] = ["-c", f'model_reasoning_effort="{effort}"']
@@ -962,7 +928,7 @@ def work_prompt(run_dir, task):
     deps = task.get("dependencies") or {}
     return (f"You are a lo worker for task {task['claimed']} in the run at {run_dir}. "
             f"Follow {SKILLS}/lo-run/SKILL.md for the worker rules. Read brief.md and decisions.md if present; "
-            f"consult plan.md and supporting context as needed. Inputs: {json.dumps(task.get('inputs', []))}. Task goal: {task['goal']} "
+            f"consult plan.md and supporting context as needed. Task goal: {task['goal']} "
             f"done_when: {task['done_when']} Dependency outputs: {json.dumps(deps, ensure_ascii=False)} {repair}"
             f"Write your result inside {task['output_dir']}/ (write a temp file, then rename). "
             "Before repeating external publishing, check saved destination IDs and whether the write succeeded. "
@@ -1115,7 +1081,6 @@ def build_parser():
     s.add_argument("--title")
     for k in DEFAULTS:
         s.add_argument(f"--{k.replace('_', '-')}", dest=k, type=int)
-    s.add_argument("--verification", choices=["global", "per-task"], default="global")
     s.add_argument("--resource", action="append",
                    help="name=capacity, e.g. web-search=8 chrome=4 clay=1 (repeatable)")
     s.set_defaults(fn=cmd_init)
@@ -1197,10 +1162,6 @@ def build_parser():
     s.add_argument("run")
     s.add_argument("--force", action="store_true", help="release running tasks only after stopping old workers and reconciling external writes")
     s.set_defaults(fn=cmd_resume)
-
-    s = sub.add_parser("rebuild", help="rebuild state.json from the ledger")
-    s.add_argument("run")
-    s.set_defaults(fn=cmd_rebuild)
 
     s = sub.add_parser("loop", help="drive the run headlessly through a CLI agent harness")
     s.add_argument("run")
