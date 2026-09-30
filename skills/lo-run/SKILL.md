@@ -65,6 +65,12 @@ scope, product behavior, a design the user will see, costs, or external
 writes, and record the answer. Only the user changes approved goals and
 `done_when`.
 
+A decision that changes work already done or verified needs an amendment that
+revises the affected tasks, so they run and are checked again; a note in
+`decisions.md` alone does not reopen them. For a large or complex change,
+have a fresh planner agent (the lo-plan skill) draft the amendment, and a
+fresh agent critique it, before you show it to the user.
+
 To amend the tasks, write a JSON list of task specs: a new id adds a task, an
 existing id revises that task, and `{"id": "<id>", "drop": true}` removes one.
 Revise the acceptance task so it covers the change. Run
