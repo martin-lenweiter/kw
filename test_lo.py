@@ -1,11 +1,9 @@
 import json
-import os
 import subprocess
 import sys
 import tempfile
 import time
 import unittest
-from unittest.mock import patch
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
@@ -24,7 +22,11 @@ def run_lo(*args, check=True):
         return p.returncode, {"error": p.stderr}
 
 
-class KwTest(unittest.TestCase):
+def state_of(run_dir):
+    return lo.Run(run_dir).load()
+
+
+class LoTest(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.run_dir = Path(self.tmp.name) / "run"
@@ -61,7 +63,7 @@ class KwTest(unittest.TestCase):
         self.assertTrue(any(l.startswith("L1  [.] t3") and "<- t1, t2" in l for l in lines))
 
     def complete(self, tid):
-        task = lo.status_of(self.run_dir)["tasks"][tid]
+        task = state_of(self.run_dir)["tasks"][tid]
         out = Path("out") / tid / task["token"] / "result.md"
         (self.run_dir / out).parent.mkdir(parents=True, exist_ok=True)
         (self.run_dir / out).write_text("result")
@@ -214,7 +216,7 @@ class KwTest(unittest.TestCase):
         self.assertEqual(code, 2)  # acceptance must cover the new task
         _, r = run_lo("amend", self.run_dir, self.write("a.json", change), "--note", "Martin: add soft cut")
         self.assertEqual((r["phase"], r["added"], r["reopened"]), ("executing", ["t4"], ["t3", "t4"]))
-        tasks = lo.status_of(self.run_dir)["tasks"]
+        tasks = state_of(self.run_dir)["tasks"]
         self.assertEqual([tasks[t]["status"] for t in ("t1", "t2", "t3", "t4")],
                          ["verified", "verified", "todo", "todo"])
         self.assertEqual((tasks["t3"]["goal"], tasks["t3"]["done_when"]), ("goal 3", "includes soft cut"))
@@ -235,7 +237,7 @@ class KwTest(unittest.TestCase):
         self.pass_all_done()
         _, r = run_lo("amend", self.run_dir, self.write("a.json", [{"id": "r1", "goal": "new scope"}]), "--note", "n")
         self.assertEqual(r["reopened"], ["r1", "p1", "c1"])
-        tasks = lo.status_of(self.run_dir)["tasks"]
+        tasks = state_of(self.run_dir)["tasks"]
         self.assertEqual((tasks["r1"]["attempts"], len(tasks["r1"]["history"])), (0, 1))
         self.assertEqual(tasks["r2"]["status"], "verified")
         self.assertEqual(self.finish_all()["phase"], "done")
@@ -263,7 +265,7 @@ class KwTest(unittest.TestCase):
         change = [{"id": "t2", "drop": True}, {"id": "t3", "depends_on": ["t1"]}]
         _, r = run_lo("amend", self.run_dir, self.write("a.json", change), "--by", "martin", "--note", "Martin: skip Attio")
         self.assertEqual((r["dropped"], r["reopened"]), (["t2"], ["t3"]))
-        self.assertNotIn("t2", lo.status_of(self.run_dir)["tasks"])
+        self.assertNotIn("t2", state_of(self.run_dir)["tasks"])
         self.assertEqual(self.finish_all()["phase"], "done")
         report = (self.run_dir / "report.md").read_text()
         self.assertIn("Martin: skip Attio", report)
@@ -382,7 +384,7 @@ class KwTest(unittest.TestCase):
     def test_global_default_executes_chain_before_verification(self):
         self.global_plan()
         self.execute_all()
-        self.assertEqual([t["status"] for t in lo.status_of(self.run_dir)["tasks"].values()], ["done", "done"])
+        self.assertEqual([t["status"] for t in state_of(self.run_dir)["tasks"].values()], ["done", "done"])
         result = self.pass_all_done()
         self.assertEqual(result["phase"], "done")
         report = self.run_dir / "report.md"
@@ -394,7 +396,7 @@ class KwTest(unittest.TestCase):
     def test_checkpoint_waits_for_independent_verification(self):
         self.global_plan(checkpoint=True)
         self.execute_all()
-        self.assertEqual([t["status"] for t in lo.status_of(self.run_dir)["tasks"].values()], ["done", "todo"])
+        self.assertEqual([t["status"] for t in state_of(self.run_dir)["tasks"].values()], ["done", "todo"])
         run_lo("verdict", self.run_dir, "source", "pass")
         self.assertEqual(run_lo("finish", self.run_dir)[1]["phase"], "executing")
         self.execute_all()
@@ -405,11 +407,11 @@ class KwTest(unittest.TestCase):
         self.execute_all()
         self.assertIn("human: review source", run_lo("status", self.run_dir)[1]["next"])
         run_lo("verdict", self.run_dir, "source", "fail", "--note", "make it simpler")
-        task = lo.status_of(self.run_dir)["tasks"]["source"]
+        task = state_of(self.run_dir)["tasks"]["source"]
         self.assertEqual((task["status"], task["last_findings"][0]["text"]), ("todo", "make it simpler"))
         self.assertEqual(run_lo("finish", self.run_dir)[1]["phase"], "executing")
         self.execute_all()
-        self.assertEqual(lo.status_of(self.run_dir)["tasks"]["result"]["status"], "todo")
+        self.assertEqual(state_of(self.run_dir)["tasks"]["result"]["status"], "todo")
         run_lo("verdict", self.run_dir, "source", "pass", "--note", "looks good")
         self.assertEqual(run_lo("finish", self.run_dir)[1]["phase"], "executing")
         self.execute_all()
@@ -427,7 +429,7 @@ class KwTest(unittest.TestCase):
         self.execute_all()
         run_lo("verdict", self.run_dir, "result", "pass")
         run_lo("verdict", self.run_dir, "source", "fail", "--findings", self.findings("incorrect"))
-        self.assertEqual(lo.status_of(self.run_dir)["tasks"]["result"]["status"], "todo")
+        self.assertEqual(state_of(self.run_dir)["tasks"]["result"]["status"], "todo")
         run_lo("finish", self.run_dir)
         self.execute_all()
         self.assertEqual(self.pass_all_done()["phase"], "done")
@@ -437,7 +439,7 @@ class KwTest(unittest.TestCase):
         self.execute_all()
         run_lo("verdict", self.run_dir, "source", "fail", "--findings", self.findings("missing"))
         self.assertEqual(run_lo("finish", self.run_dir)[1]["phase"], "partial")
-        self.assertNotEqual(lo.status_of(self.run_dir)["tasks"]["result"]["status"], "verified")
+        self.assertNotEqual(state_of(self.run_dir)["tasks"]["result"]["status"], "verified")
 
     def test_stale_claim_cannot_complete_new_attempt(self):
         self.to_executing(n=1)
@@ -481,85 +483,6 @@ class KwTest(unittest.TestCase):
         run_lo("resolve", self.run_dir, "source", "--retry", "--note", "input restored, old worker stopped")
         self.execute_all()
         self.assertEqual(self.pass_all_done()["phase"], "done")
-
-    def test_loop_rejected_completion_is_not_reported_as_success(self):
-        self.to_executing(n=1)
-        (self.run_dir / "out" / "foreign.md").write_text("not this attempt")
-        (self.run_dir / "loop.json").write_text(json.dumps({"fake": {
-            "cmd": [sys.executable, "-c", "print('TASK_OUTPUT: out/foreign.md')"]}}))
-        result = run_lo("loop", self.run_dir, "--harness", "fake")[1]
-        self.assertEqual(result["stopped"], "partial")
-        self.assertTrue(any("error" in step for step in result["steps"]))
-        self.assertFalse(any("done" in step for step in result["steps"]))
-
-    def test_native_model_and_effort_are_separate_arguments(self):
-        self.run_dir.mkdir()
-        with patch("lo.subprocess.Popen") as popen:
-            popen.return_value.__enter__.return_value.wait.return_value = 0
-            lo.agent_call(lo.HARNESSES["codex"], self.run_dir, "test", "gpt-6-astra", "prompt", 1, "high")
-            command = popen.call_args.args[0]
-            self.assertEqual(command[command.index("--model") + 1], "gpt-6-astra")
-            self.assertIn('model_reasoning_effort="high"', command)
-            self.assertNotIn('model_reasoning_effort="gpt-6-astra"', command)
-
-    def test_timeout_terminates_child_process_group(self):
-        self.run_dir.mkdir()
-        marker = self.run_dir / "orphan.txt"
-        child = "import time; from pathlib import Path; time.sleep(1); Path(" + repr(str(marker)) + ").write_text('orphan')"
-        parent = "import subprocess,sys,time; subprocess.Popen([sys.executable,'-c'," + repr(child) + "]); time.sleep(10)"
-        cfg = {"cmd": [sys.executable, "-c", parent]}
-        code, _, _ = lo.agent_call(cfg, self.run_dir, "timeout", None, "", 0.2)
-        self.assertEqual(code, 124)
-        time.sleep(1.1)
-        self.assertFalse(marker.exists())
-
-    def test_loop_end_to_end_with_fake_harness(self):
-        run_lo("init", self.run_dir)
-        fake = Path(__file__).with_name("tests_fake_agent.py")
-        (self.run_dir / "loop.json").write_text(json.dumps({"fake": {
-            "cmd": [sys.executable, str(fake), "{model}", "{prompt}"]}}))
-        _, r = run_lo("loop", self.run_dir, "--harness", "fake")
-        self.assertEqual(r["stopped"], "awaiting-approval")  # human gate respected
-        run_lo("approve", self.run_dir)
-        _, r = run_lo("loop", self.run_dir, "--harness", "fake")
-        self.assertEqual(r["stopped"], "done", r)
-        _, s = run_lo("status", self.run_dir)
-        self.assertEqual(s["counts"]["verified"], 3)
-        self.assertEqual((self.run_dir / "out" / "verifier.calls").read_text().split(), ["stage", "stage"])
-        t1 = [t for t in s["tasks"] if t["id"] == "t1"][0]
-        self.assertEqual(t1["attempts"], 1)  # one repair after the fake verifier failed it
-        self.assertEqual((self.run_dir / "out" / "t1.calls").read_text().split(), ["model-a", "model-a"])
-        self.assertEqual((self.run_dir / "out" / "acc.calls").read_text().split(), ["model-b", "model-b"])
-
-    def test_loop_stops_for_human_review(self):
-        run_lo("init", self.run_dir)
-        fake = Path(__file__).with_name("tests_fake_agent.py")
-        (self.run_dir / "loop.json").write_text(json.dumps({"fake": {
-            "cmd": [sys.executable, str(fake), "{model}", "{prompt}"]}}))
-        with patch.dict(os.environ, {"FAKE_HUMAN_CHECKPOINT": "t2"}):
-            run_lo("loop", self.run_dir, "--harness", "fake")
-            run_lo("approve", self.run_dir)
-            _, r = run_lo("loop", self.run_dir, "--harness", "fake")
-        self.assertEqual(r["stopped"], "awaiting-review", r)
-        self.assertIn("human: review t2", r["next"])
-        tasks = lo.status_of(self.run_dir)["tasks"]
-        self.assertEqual((tasks["t2"]["status"], tasks["acc"]["status"]), ("done", "todo"))
-
-    def test_loop_records_decisions_and_blocks_open_questions(self):
-        run_lo("init", self.run_dir)
-        fake = Path(__file__).with_name("tests_fake_agent.py")
-        (self.run_dir / "loop.json").write_text(json.dumps({"fake": {
-            "cmd": [sys.executable, str(fake), "{model}", "{prompt}"]}}))
-        with patch.dict(os.environ, {"FAKE_DECISIONS": "1"}):
-            run_lo("loop", self.run_dir, "--harness", "fake")
-            run_lo("approve", self.run_dir)
-            run_lo("loop", self.run_dir, "--harness", "fake")
-        decisions = (self.run_dir / "decisions.md").read_text()
-        self.assertIn("## t1 (worker", decisions)
-        self.assertIn("Use UTC for all dates.", decisions)
-        t2 = lo.status_of(self.run_dir)["tasks"]["t2"]
-        self.assertEqual(t2["status"], "needs-human")
-        self.assertIn("Which provider should we use?", t2["stop_reason"])
 
 
 if __name__ == "__main__":

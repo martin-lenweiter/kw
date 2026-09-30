@@ -21,8 +21,8 @@ committed.
 
 Ask only about missing information that changes the result or your authority,
 such as scope, costs, and external writes. Ask the user in the conversation
-and record questions and answers in `questions.md`. In a headless run, run
-`lo phase <run> awaiting-answers` and stop. When the brief is
+and record questions and answers in `questions.md`. If you must stop before the user
+answers, run `lo phase <run> awaiting-answers`. When the brief is
 clear, run `lo phase <run> planning`.
 
 ## Plan the tasks

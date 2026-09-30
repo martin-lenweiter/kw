@@ -51,16 +51,12 @@ The agent then:
    reports what was delivered, how it was checked, and what is unresolved.
 
 You answer questions and approve in the conversation; you do not need to type
-commands. To run a job without a chat, use the headless loop:
+commands. The chat agent is the orchestrator; it hands tasks to subagents.
 
-```sh
-lo init runs/prices --brief brief.md
-lo loop runs/prices --harness claude    # or --harness codex
-```
-
-The loop starts separate agent processes and pauses whenever it needs you:
-for answers (`questions.md`), for plan approval (`lo approve runs/prices`),
-and for your reviews (`lo verdict ...`). Run `lo loop` again to continue.
+To run unattended, start the same agent without a chat and point it at the
+run, for example `claude -p "Continue the lo run in .lo/prices with lo-run"`
+or `codex exec`. It stops where it needs you, and all state stays in the run
+folder, so any later chat can pick it up.
 
 ## How a run works
 
@@ -82,8 +78,9 @@ lo verdict <run> design fail --note "simpler layout, larger prices"
 **Changes and decisions.** When you change the request, the orchestrator
 records it with `lo amend`, which reopens only the affected tasks. Workers
 report the decisions they make under `## Decisions` and the questions they
-cannot settle under `## Needs decision` in their results. Decisions go into
-`decisions.md`; open questions stop the task until you answer.
+cannot settle under `## Needs decision` in their results. The orchestrator
+records decisions in `decisions.md`, settles minor questions itself, and
+brings material ones to you.
 
 **End states.** A run ends `done` when the final (acceptance) task passes and
 nothing is unresolved, otherwise `partial`, with the open items in
@@ -97,7 +94,6 @@ nothing is unresolved, otherwise `partial`, with the open items in
 | `skills/lo-plan` | How to plan a run: clarify, write tasks with checks, get a critique, ask for approval. |
 | `skills/lo-run` | How to coordinate the work: claim tasks, brief workers, keep the plan and decisions current, record changes, handle problems. |
 | `skills/lo-verify` | How to check the result independently and record verdicts. |
-| `lo loop` | Optional driver that runs the planner, workers, and verifier as separate `claude` or `codex` processes, without a chat. |
 | Run folder | The board itself; see below. |
 
 ## Run folder
@@ -110,7 +106,6 @@ nothing is unresolved, otherwise `partial`, with the open items in
 | `out/<task>/<attempt>/` | Each worker's output |
 | `report.md` | Final status, outputs, findings, and unresolved work |
 | `ledger.jsonl`, `state.json` | The full history and the current state; change them only through `lo` |
-| `logs/` | Agent process logs from `lo loop` |
 
 ## Setup
 
@@ -136,14 +131,12 @@ lo --help
 | `lo amend <run> <file>` | Record a change to the approved tasks |
 | `lo resolve <run> <id>` | Return a task that needed you, after a fix or with `--retry` |
 | `lo resume <run>` | Recover after a crash; flags expired claims |
-| `lo loop <run> --harness claude\|codex` | Run headless |
 
 **Options.** `init --max-parallel N` caps concurrent workers.
 `init --resource browser=1` limits tasks that declare `"uses": ["browser"]`.
 `init --max-repairs N` sets repairs per task (default 2); a finding that
 repeats stops the task for you. Tasks can set a concrete `model` and a
-separate `effort`; `lo loop --model` and `--effort` set run-wide values, and
-`<run>/loop.json` overrides the harness command.
+separate `effort`.
 
 **Recovery.** Each claim has a token and its own output folder, so a stale
 worker cannot overwrite a newer attempt. A claim lease lasts 30 minutes.

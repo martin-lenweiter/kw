@@ -58,8 +58,7 @@ into them, whether the user raises it or an agent discovers it: update
 the tasks when a goal or `done_when` changes.
 
 Workers report decisions under `## Decisions` and open questions under
-`## Needs decision` in their results; copy them into `decisions.md` (the
-headless loop does this itself). Decide minor questions yourself and record
+`## Needs decision` in their results; copy them into `decisions.md`. Decide minor questions yourself and record
 them as orchestrator decisions. Bring anything material to the user, such as
 scope, product behavior, a design the user will see, costs, or external
 writes, and record the answer. Only the user changes approved goals and
