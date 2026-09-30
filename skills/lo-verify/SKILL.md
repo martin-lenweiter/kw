@@ -17,6 +17,8 @@ that each `done_when` describes, and use your judgment for anything it leaves
 open.
 
 - Examine the actual result, not the worker's report of it.
+- A departure from `plan.md` or `decisions.md` that no recorded decision
+  covers is a finding.
 - A check you could not perform is not a pass. Record why it was not possible.
 - Do not lower the bar, and do not add requirements that the brief and the
   task do not contain.

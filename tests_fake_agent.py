@@ -4,15 +4,15 @@ from pathlib import Path
 
 prompt = sys.argv[-1]
 run = Path.cwd()
-KW = [sys.executable, str(Path(__file__).with_name("lo.py"))]
+LO = [sys.executable, str(Path(__file__).with_name("lo.py"))]
 
-def kw(*a):
-    return subprocess.run(KW + list(a), capture_output=True, text=True, check=True)
+def lo(*a):
+    return subprocess.run(LO + list(a), capture_output=True, text=True, check=True)
 
 if "lo planner" in prompt:
-    phase = json.loads(kw("status", str(run)).stdout)["phase"]
+    phase = json.loads(lo("status", str(run)).stdout)["phase"]
     if phase == "clarifying":
-        kw("phase", str(run), "planning")
+        lo("phase", str(run), "planning")
     tasks = [{"id": "t1", "goal": "g1", "done_when": "file says ok", "model": "fast"},
              {"id": "t2", "goal": "g2", "done_when": "file says ok",
               "checkpoint": "human" if os.environ.get("FAKE_HUMAN_CHECKPOINT") == "t2" else False},
@@ -20,15 +20,20 @@ if "lo planner" in prompt:
               "acceptance": True, "model": "strong"}]
     (run / "tasks.json").write_text(json.dumps(tasks))
     (run / "plan.md").write_text("plan")
-    kw("tasks", "set", str(run), str(run / "tasks.json"))
-    kw("phase", str(run), "awaiting-approval")
+    lo("tasks", "set", str(run), str(run / "tasks.json"))
+    lo("phase", str(run), "awaiting-approval")
     print("planned")
 elif "lo worker for task" in prompt:
     tid = re.search(r"lo worker for task (\S+)", prompt).group(1)
     state = json.loads((run / "state.json").read_text())
     out = run / state["tasks"][tid]["output_dir"] / "result.md"
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text("ok")
+    body = "ok"
+    if os.environ.get("FAKE_DECISIONS") and tid == "t1":
+        body += "\n\n## Decisions\n\nUse UTC for all dates.\n"
+    if os.environ.get("FAKE_DECISIONS") and tid == "t2":
+        body += "\n\n## Needs decision\n\nWhich provider should we use?\n"
+    out.write_text(body)
     (run / "out" / f"{tid}.calls").open("a").write(sys.argv[-2] + "\n")  # records model used
     print(f"TASK_OUTPUT: {out.relative_to(run)}")
 elif "lo verifier" in prompt:
@@ -47,8 +52,8 @@ elif "lo verifier" in prompt:
         if tid == "t1" and not marker.exists():
             marker.write_text("x")
             f.write_text(json.dumps([{"key": "k1", "severity": "blocking", "text": "redo"}]))
-            kw("verdict", str(run), tid, "fail", "--findings", str(f))
+            lo("verdict", str(run), tid, "fail", "--findings", str(f))
         else:
             f.write_text("[]")
-            kw("verdict", str(run), tid, "pass", "--findings", str(f))
+            lo("verdict", str(run), tid, "pass", "--findings", str(f))
     print("verified")

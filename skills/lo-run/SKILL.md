@@ -48,14 +48,26 @@ pattern match on the model name.
 - Before you repeat an external write, check the destination for the earlier
   write. A timeout does not show that the write failed.
 
-## Requirement changes
+## Keep the run canonical
 
-When the user adds or changes something, record it in the run instead of
-remembering it. Write a JSON list of task specs: a new id adds a task, an
+`plan.md`, the tasks, and `decisions.md` are the one source of truth for you,
+the workers, and the verifier. Every change in requirements or design goes
+into them, whether the user raises it or an agent discovers it: update
+`plan.md`, record the decision in `decisions.md` with who made it, and amend
+the tasks when a goal or `done_when` changes.
+
+Workers report decisions under `## Decisions` and open questions under
+`## Needs decision` in their results; copy them into `decisions.md` (the
+headless loop does this itself). Decide minor questions yourself and record
+them as orchestrator decisions. Bring anything material to the user, such as
+scope, product behavior, a design the user will see, costs, or external
+writes, and record the answer. Only the user changes approved goals and
+`done_when`.
+
+To amend the tasks, write a JSON list of task specs: a new id adds a task, an
 existing id revises that task, and `{"id": "<id>", "drop": true}` removes one.
 Revise the acceptance task so it covers the change. Run
-`lo amend <run> <file> --by <user> --note "<change>"` and add
-the change to `decisions.md`.
+`lo amend <run> <file> --by <user> --note "<change>"`.
 
 The run reopens the revised tasks, their dependents, and the acceptance task;
 other verified work stays verified. Stop workers on the affected tasks first.

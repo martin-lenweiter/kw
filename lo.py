@@ -966,17 +966,36 @@ def work_prompt(run_dir, task):
             f"done_when: {task['done_when']} Dependency outputs: {json.dumps(deps, ensure_ascii=False)} {repair}"
             f"Write your result inside {task['output_dir']}/ (write a temp file, then rename). "
             "Before repeating external publishing, check saved destination IDs and whether the write succeeded. "
+            "plan.md and decisions.md are the shared source of truth. Do not silently depart from them: list any "
+            "decision others depend on under '## Decisions' in your result, and if a material requirement or "
+            "design question needs the user, stop and put it under '## Needs decision'. "
             "Do not run lo. End your reply with one line: TASK_OUTPUT: <path relative to the run dir>.")
 
 
 def verify_prompt(run_dir, pending):
     return (f"You are the independent lo verifier for the run at {run_dir}. "
-            f"Follow {SKILLS}/lo-verify/SKILL.md. Assess the combined result against brief.md and decisions.md. "
+            f"Follow {SKILLS}/lo-verify/SKILL.md. Assess the combined result against brief.md, plan.md and decisions.md; "
+            "a departure from them that no decision records is a finding. "
             f"Pending tasks: {json.dumps(pending)}. Record verdicts with lo verdict {run_dir} <id> pass|fail "
             "--findings <file>. Review dependencies before their consumers. Refresh state after each verdict: "
             "a failure invalidates downstream outputs, which must not receive verdicts until rerun. "
             "At an intermediate checkpoint, assess the available work without claiming final acceptance. "
             "Do not run lo finish.")
+
+
+def result_section(text, name):
+    """Body of a '## <name>' section in a worker result, or '' if absent or 'none'."""
+    m = re.search(rf"^##\s*{name}\s*$(.*?)(?=^##\s|\Z)", text, re.M | re.S | re.I)
+    body = m.group(1).strip() if m else ""
+    return "" if body.lower().rstrip(".") in ("", "none", "n/a") else body
+
+
+def record_decisions(run_dir, tid, decisions):
+    """Append a worker's decisions to decisions.md, the run's shared record."""
+    run = Run(run_dir)
+    with run.locked():
+        with open(Path(run_dir) / "decisions.md", "a") as fh:
+            fh.write(f"\n## {tid} (worker, {time.strftime('%Y-%m-%d %H:%M')})\n\n{decisions}\n")
 
 
 def block_failed_attempt(run_dir, task, reason):
@@ -1036,9 +1055,19 @@ def cmd_loop(args):
                                               work_prompt(run_dir, task), args.timeout, task.get("effort") or args.effort)
                 result = {"error": f"worker exit {code}; missing or invalid output"}
                 if code == 0 and output:
+                    path = run_dir / output
+                    text = path.read_text() if path.is_file() else ""
+                    question = result_section(text, "Needs decision")
+                    if question:
+                        r = run_json(["block", str(run_dir), task["claimed"], "--token", task["token"],
+                                      "--reason", f"needs decision: {question}"])
+                        return {"task": task["claimed"], "needs_decision": question, "log": str(lg), **r}
                     result = run_json(["done", str(run_dir), task["claimed"], "--output", output,
                                        "--token", task["token"]])
                     if "error" not in result:
+                        decisions = result_section(text, "Decisions")
+                        if decisions:
+                            record_decisions(run_dir, task["claimed"], decisions)
                         return {"task": task["claimed"], "done": output, "log": str(lg)}
                 block_failed_attempt(run_dir, task, result["error"] + "; inspect output and external writes before resolving")
                 return {"task": task["claimed"], "exit": code, "output": output, "log": str(lg), **result}

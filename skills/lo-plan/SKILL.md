@@ -28,7 +28,8 @@ clear, run `lo phase <run> planning`.
 ## Plan the tasks
 
 Write `plan.md` with the approach and anything workers and the verifier need
-to know. If the user's environment has a skill that defines good work of this
+to know. `plan.md`, the tasks, and `decisions.md` are the run's one source of
+truth; keep them current as decisions change. If the user's environment has a skill that defines good work of this
 kind, name it in `plan.md` so that workers and the verifier apply it.
 
 Write `tasks.json`, for example:
