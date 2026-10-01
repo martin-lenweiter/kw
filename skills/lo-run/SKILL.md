@@ -19,7 +19,8 @@ show whether their external writes succeeded.
 2. Give the worker the task, the relevant decisions, and pointers to inputs.
    On a repair, include the findings and keep passing work.
 3. The worker writes its result to `out/<id>/<token>/result.md` (write a temp
-   file, then rename) and links supporting evidence.
+   file, then rename) and links supporting evidence. Do not edit a result
+   after the task is done; later evidence goes into `reviews/<id>.md`.
 4. Record completion with
    `lo done <run> <id> --token <token> --output out/<id>/<token>/result.md`
    and check that the command succeeded.
@@ -61,8 +62,9 @@ Workers report decisions under `## Decisions` and open questions under
 `## Needs decision` in their results; copy them into `decisions.md`. Decide minor questions yourself and record
 them as orchestrator decisions. Bring anything material to the user, such as
 scope, product behavior, a design the user will see, costs, or external
-writes, and record the answer. Only the user changes approved goals and
-`done_when`.
+writes, and record the answer. Change approved goals and `done_when` only on
+the user's request. New work that needs its own worker or its own check
+becomes a task through an amendment, even when it serves an existing goal.
 
 A decision that changes work already done or verified needs an amendment that
 revises the affected tasks, so they run and are checked again; a note in

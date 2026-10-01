@@ -103,7 +103,8 @@ nothing is unresolved, otherwise `partial`, with the open items in
 | `brief.md`, `questions.md` | Your request, and the questions with their answers |
 | `plan.md`, `tasks.json`, `critique.md` | The current plan, the tasks with their checks, and the critique |
 | `decisions.md` | Every decision made during the run, and who made it |
-| `out/<task>/<attempt>/` | Each worker's output |
+| `out/<task>/<attempt>/` | Each worker's output, unchanged after completion |
+| `reviews/<task>.md` | The verifier's evidence for each task |
 | `report.md` | Final status, outputs, findings, and unresolved work |
 | `ledger.jsonl`, `state.json` | The full history and the current state; change them only through `lo` |
 

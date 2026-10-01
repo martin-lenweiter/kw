@@ -31,7 +31,9 @@ a verdict. At an intermediate checkpoint, judge only the completed work.
 
 ## Record verdicts
 
-Write findings when needed:
+Write your evidence for each task to `reviews/<id>.md`: what you ran, opened,
+or read, and what you saw. Do not edit worker results. Write findings when
+needed:
 
 ```json
 [{"key": "wrong-total", "severity": "blocking", "text": "The page shows 12.90 for item A; the provider shows 13.90."}]

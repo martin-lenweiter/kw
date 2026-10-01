@@ -22,8 +22,9 @@ committed.
 Ask only about missing information that changes the result or your authority,
 such as scope, costs, and external writes. Ask the user in the conversation
 and record questions and answers in `questions.md`. If you must stop before the user
-answers, run `lo phase <run> awaiting-answers`. When the brief is
-clear, run `lo phase <run> planning`.
+answers, run `lo phase <run> awaiting-answers`. When the user settles what to
+build, rewrite `brief.md` to state the current request, then run
+`lo phase <run> planning`.
 
 ## Plan the tasks
 
@@ -47,9 +48,11 @@ Write `tasks.json`, for example:
 - Exactly one `acceptance` task depends, directly or indirectly, on every other
   task and covers the whole brief.
 - Set `"checkpoint": true` when consumers must wait until an input is
-  verified. Set `"checkpoint": "human"` when only the user can judge the
-  result, for example a design or a blocked data source. The run pauses there
-  for the user's verdict.
+  verified. Set `"checkpoint": "human"` when only the user can judge a result
+  and the answer changes later work, for example a design before building on
+  it. The run pauses there for the user's verdict. Do not add one only for a
+  final sign-off: the user sees the verified result and can still ask for
+  changes.
 - Set `model` and `effort` for each task. The planner, orchestrator, and
   verifier use the most intelligent model available, as do tasks that need
   hard judgment. Implementers use a capable mid-tier model, never the least
@@ -68,8 +71,7 @@ findings in `critique.md` and resolve material issues.
 
 Show the user the deliverables, how each is checked, the human checkpoints,
 the agents and models, and any costs or external writes. Then run
-`lo phase <run> awaiting-approval` and ask for approval. Only the user
-approves: when the user approves in the conversation, run `lo approve <run>`
-and continue with the lo-run skill in the same conversation. Approval freezes
-task goals and `done_when`; only the user changes them later, through
-`amend`.
+`lo phase <run> awaiting-approval` and ask the user to approve. When the user
+approves in the conversation, run `lo approve <run>` and continue with the
+lo-run skill in the same conversation. Approval freezes task goals and
+`done_when`; change them later only on the user's request, through `amend`.
